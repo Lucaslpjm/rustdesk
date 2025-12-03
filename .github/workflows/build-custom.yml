@@ -1,7 +1,7 @@
 name: Build Custom RustDesk Windows
 
 on:
-  workflow_dispatch: # Permite rodar manualmente clicando num botão
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -16,38 +16,40 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install dependencies (vcpkg)
+    - name: Setup VCPKG (Manifest Mode)
+      # Apenas garante que o vcpkg está atualizado e pronto para ler o vcpkg.json
       run: |
-        vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
+        vcpkg integrate install
       shell: cmd
 
-    - name: Hardcode Server Settings (Apply IP & Key)
+    - name: Hardcode Server Settings
       shell: powershell
       run: |
-        # Caminho do arquivo de configuração padrão
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # Le o conteudo original
+        # Le o arquivo original
         $content = Get-Content $ConfigFile
         
-        # 1. Substitui o servidor de Rendezvous (ID Server) padrão
-        # Procura onde define o servidor padrao e troca pelo seu IP
+        # 1. Define o Servidor de ID e Relay (Rendezvous)
         $content = $content -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
         
-        # 2. Substitui a Chave Publica (Key) pelo seu IP (conforme seu pedido)
+        # 2. Define a Key como o IP (conforme seu teste)
         $content = $content -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
         
-        # Salva o arquivo modificado
+        # 3. Força a API ser vazia para evitar erros de login web
+        # (O RustDesk usa uma variavel padrao, vamos tentar injetar vazio se houver)
+        # Se nao houver a constante explicita, o env var no build resolve.
+        
         $content | Set-Content $ConfigFile
         
-        Write-Host "Configuracoes aplicadas com sucesso no codigo fonte!"
-        Get-Content $ConfigFile | Select-String "20.195.216.23"
+        Write-Host "Configuracoes aplicadas: ID/Relay = 20.195.216.23 | Key = 20.195.216.23"
 
     - name: Build Release
+      # O comando build vai disparar o vcpkg automaticamente via cargo
       run: cargo build --release --features inline
       env:
-        # Garante que nao use a API server se nao especificado
-        RUSTDESK_API_SERVER: "" 
+        RUSTDESK_API_SERVER: "" # Garante API vazia
+        VCPKG_ROOT: "C:\\vcpkg"
 
     - name: Upload .exe
       uses: actions/upload-artifact@v4
