@@ -1,0 +1,56 @@
+name: Build Custom RustDesk Windows
+
+on:
+  workflow_dispatch: # Permite rodar manualmente clicando num botão
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install dependencies (vcpkg)
+      run: |
+        vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
+      shell: cmd
+
+    - name: Hardcode Server Settings (Apply IP & Key)
+      shell: powershell
+      run: |
+        # Caminho do arquivo de configuração padrão
+        $ConfigFile = "libs/hbb_common/src/config.rs"
+        
+        # Le o conteudo original
+        $content = Get-Content $ConfigFile
+        
+        # 1. Substitui o servidor de Rendezvous (ID Server) padrão
+        # Procura onde define o servidor padrao e troca pelo seu IP
+        $content = $content -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
+        
+        # 2. Substitui a Chave Publica (Key) pelo seu IP (conforme seu pedido)
+        $content = $content -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+        
+        # Salva o arquivo modificado
+        $content | Set-Content $ConfigFile
+        
+        Write-Host "Configuracoes aplicadas com sucesso no codigo fonte!"
+        Get-Content $ConfigFile | Select-String "20.195.216.23"
+
+    - name: Build Release
+      run: cargo build --release --features inline
+      env:
+        # Garante que nao use a API server se nao especificado
+        RUSTDESK_API_SERVER: "" 
+
+    - name: Upload .exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: rustdesk-custom-host
+        path: target/release/rustdesk.exe
