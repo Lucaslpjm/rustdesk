@@ -40,8 +40,8 @@ jobs:
       shell: powershell
       run: |
         # 1. DOWNLOAD DOS ÍCONES E LOGOS (Links do Saurus)
-        $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/Símbolo-Colorido-Fundo-Escuro.ico"
-        $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/Logo%20Horizontal%20-%20Colorido%20-%20Fundo%20Escuro%20(2).png"
+        $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/icoRust.ico"
+        $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
         
         Write-Host "Baixando logos..."
         # Substitui o icone do executavel (Windows)
