@@ -31,7 +31,6 @@ jobs:
     - name: Install LLVM (Required for Audio)
       run: |
         choco install llvm -y
-        # Adiciona ao PATH para garantir que o build encontre
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
@@ -39,19 +38,19 @@ jobs:
     - name: Apply Customizations (Branding)
       shell: powershell
       run: |
-        # 1. DOWNLOAD DOS ÍCONES E LOGOS (Links do Saurus)
+        # 1. DOWNLOAD DOS ÍCONES E LOGOS (Links Saurus Corrigidos)
         $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/icoRust.ico"
         $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
         
         Write-Host "Baixando logos..."
-        # Substitui o icone do executavel (Windows)
+        
+        # Baixa os arquivos (Agora sem acentos na URL, deve funcionar 100%)
         Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico"
-        # Substitui o logo interno (Legado e UI)
         Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png"
         
-        # Tenta substituir o logo dentro da pasta do Flutter (Interface Moderna)
+        # Substitui o logo na pasta do Flutter (Interface Moderna)
         if (Test-Path "flutter/assets/images/logo.png") {
-            Invoke-WebRequest -Uri $UrlLogo -OutFile "flutter/assets/images/logo.png"
+            Copy-Item "res/logo.png" -Destination "flutter/assets/images/logo.png" -Force
         }
 
         # 2. APLICAÇÃO DA COR (Azul Saurus: #1E2044)
@@ -72,7 +71,7 @@ jobs:
         if (Test-Path $ConfigFile) {
            $c = Get-Content $ConfigFile
            
-           # Troca o nome APP_NAME (Logica segura)
+           # Troca o nome APP_NAME
            $c = $c -replace 'pub const APP_NAME.*', 'pub const APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("Saurus Remote".to_string()));'
            
            # Configura IP (ID e Key iguais)
@@ -92,12 +91,13 @@ jobs:
         
         Write-Host "Customizacoes completas aplicadas."
 
-    # --- BUILD ---
+    # --- BUILD CORRIGIDO ---
     - name: Build Saurus Client
-      # O script build.py gerencia o VCPKG automaticamente (evita o erro do .bat manual)
-      run: python build.py --windows-only
+      # REMOVIDO --windows-only (que não existe mais)
+      # ADICIONADO --flutter (para garantir que a UI com cores seja construída)
+      run: python build.py --flutter
       env:
-        # Força o modo static para gerar um .exe unico sem depender de DLLs externas
+        # Força o modo static para gerar um .exe unico
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
 
     - name: Upload .exe
