@@ -31,33 +31,38 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CORREÇÃO: FORÇAR INSTALAÇÃO ESTÁTICA ---
+    # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS (CORREÇÃO DE LINKER) ---
     - name: Install Dependencies & Fix Paths
       shell: powershell
       run: |
         Write-Host "Forcando instalacao ESTATICA (x64-windows-static)..."
         
-        # 1. Instala explicitamente com o triplet estatico
+        # 1. Instala dependencias
         vcpkg install --triplet x64-windows-static
         
-        # 2. Caminho onde os arquivos ficarao
-        $LocalInclude = Join-Path (Get-Location) "vcpkg_installed\x64-windows-static\include"
+        # 2. Define caminhos locais
+        $BaseDir = Get-Location
+        $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
+        $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
         
-        Write-Host "Verificando headers em: $LocalInclude"
+        Write-Host "Include Path: $IncludePath"
+        Write-Host "Lib Path: $LibPath"
         
-        # Verificacao de Seguranca
-        if (Test-Path "$LocalInclude\opus\opus_multistream.h") {
-            Write-Host "SUCESSO: Header do Opus encontrado!"
+        if (Test-Path "$IncludePath\opus\opus_multistream.h") {
+            Write-Host "SUCESSO: Dependencias encontradas."
             
-            # 3. Injeta as variaveis para o Build
-            echo "BINDGEN_EXTRA_CLANG_ARGS=-I$LocalInclude" >> $env:GITHUB_ENV
-            echo "CPATH=$LocalInclude" >> $env:GITHUB_ENV
-            echo "VCPKG_ROOT=$(Get-Location)" >> $env:GITHUB_ENV
+            # --- A MÁGICA PARA CORRIGIR O ERRO ATUAL ---
+            # 1. BINDGEN: Para achar os .h
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
+            echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
+            
+            # 2. RUSTFLAGS: Para achar os .lib (opus.lib, vpx.lib) <- ISSO CONSERTA O ERRO DE AGORA
+            echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
+            
+            # 3. VCPKG Root
+            echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
         } else {
-            # Se falhar, lista o que tem na pasta para debug
-            Write-Warning "Arquivo nao encontrado. Listando conteudo da pasta:"
-            Get-ChildItem -Path "vcpkg_installed" -Recurse | Select-Object FullName
-            Write-Error "ERRO: O arquivo opus_multistream.h nao foi encontrado apos a instalacao."
+            Write-Error "ERRO: Dependencias nao encontradas apos instalacao."
             exit 1
         }
 
@@ -76,7 +81,6 @@ jobs:
             if (Test-Path "flutter/assets/images/logo.png") {
                 Copy-Item "res/logo.png" -Destination "flutter/assets/images/logo.png" -Force
             }
-            Write-Host "Logos baixados!"
         } catch {
             Write-Warning "Erro ao baixar logos. Usando padrao."
         }
@@ -110,5 +114,4 @@ jobs:
     - name: Build Saurus Client
       run: python build.py --flutter
       env:
-        # Garante que o Python tambem saiba que é static
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
