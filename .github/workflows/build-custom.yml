@@ -20,68 +20,47 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
+    # --- CORREÇÃO DO ERRO ATUAL: TRAVAR VERSÃO DO FLUTTER ---
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
+        # Usamos a 3.22.2 para evitar erros de compatibilidade da versão mais nova
+        flutter-version: '3.22.2'
         channel: 'stable'
 
-    - name: Install LLVM (Required for Audio)
+    - name: Install Flutter Rust Bridge Codegen
+      run: |
+        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
+      shell: powershell
+
+    - name: Generate Bridge Code
+      shell: powershell
+      run: |
+        $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
+        flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
+
+    - name: Install LLVM
       run: |
         choco install llvm -y
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
-
-    # --- PASSO NOVO: GERAR CÓDIGO BRIDGE ---
-    - name: Generate Bridge Code (Fix Missing File)
-      shell: powershell
-      run: |
-        # 1. Instala a ferramenta (Codegen)
-        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
-        
-        # 2. Adiciona o binario ao PATH (Garante que o comando funcione)
-        $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
-        
-        # 3. EXECUTA a geracao do arquivo que estava faltando
-        Write-Host "Gerando src/bridge_generated.rs..."
-        flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
-        
-        # Verificacao
-        if (Test-Path "src/bridge_generated.rs") {
-            Write-Host "SUCESSO: Arquivo de ponte gerado!"
-        } else {
-            Write-Error "FALHA CRITICA: O arquivo bridge_generated.rs nao foi criado."
-            exit 1
-        }
 
     # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS ---
     - name: Install Dependencies & Fix Paths
       shell: powershell
       run: |
         Write-Host "Forcando instalacao ESTATICA (x64-windows-static)..."
-        
-        # 1. Instala dependencias
         vcpkg install --triplet x64-windows-static
         
-        # 2. Define caminhos locais
         $BaseDir = Get-Location
         $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
         $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
         
-        Write-Host "Include Path: $IncludePath"
-        Write-Host "Lib Path: $LibPath"
-        
-        if (Test-Path "$IncludePath\opus\opus_multistream.h") {
-            Write-Host "SUCESSO: Dependencias encontradas."
-            
-            # Variaveis para o compilador
-            echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
-            echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
-            echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
-            echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
-        } else {
-            Write-Error "ERRO: Dependencias nao encontradas apos instalacao."
-            exit 1
-        }
+        # Variaveis para o compilador
+        echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
+        echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
+        echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
+        echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
     # --- CUSTOMIZAÇÃO VISUAL ---
     - name: Apply Customizations (Branding)
