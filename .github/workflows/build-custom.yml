@@ -23,7 +23,7 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.2' # Versao estavel para o código C++
+        flutter-version: '3.22.2'
         channel: 'stable'
 
     - name: Install LLVM
@@ -32,23 +32,25 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- PASSO DE CORREÇÃO: DOWNGRADE DE DEPENDÊNCIA ---
-    - name: Fix Dependencies for Older Flutter
+    # --- CORREÇÃO DE DEPENDÊNCIAS (MODO AGRESSIVO) ---
+    - name: Force Downgrade extended_text
       working-directory: ./flutter
       shell: powershell
       run: |
         $File = "pubspec.yaml"
-        $Content = Get-Content $File
+        Write-Host "Lendo arquivo original..."
         
-        Write-Host "Ajustando versoes conflitantes..."
+        # Le o arquivo
+        $Content = Get-Content $File -Raw
         
-        # Troca extended_text 14.0.0 (que pede Dart 3.5) por 13.0.0 (que aceita Dart 3.4)
-        $Content = $Content -replace 'extended_text: \^14.0.0', 'extended_text: ^13.0.0'
+        # Regex Agressivo: Procura 'extended_text:' seguido de qualquer coisa ate o fim da linha
+        # Substitui pela versao 13.0.0 que funciona com Flutter 3.22
+        $NewContent = $Content -replace 'extended_text:.*', 'extended_text: ^13.0.0'
         
-        # Salva o arquivo alterado
-        $Content | Set-Content $File
+        # Salva
+        Set-Content -Path $File -Value $NewContent -Encoding UTF8
         
-        Write-Host "Arquivo pubspec.yaml ajustado!"
+        Write-Host "Verificando se a mudanca foi aplicada:"
         Get-Content $File | Select-String "extended_text"
 
     # --- PREPARAR DEPENDÊNCIAS ---
@@ -79,7 +81,6 @@ jobs:
         $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
         $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
         
-        # Variaveis para o compilador
         echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
         echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
@@ -96,7 +97,6 @@ jobs:
         try {
             Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico" -ErrorAction Stop
             Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png" -ErrorAction Stop
-            
             if (Test-Path "flutter/assets/images/logo.png") {
                 Copy-Item "res/logo.png" -Destination "flutter/assets/images/logo.png" -Force
             }
