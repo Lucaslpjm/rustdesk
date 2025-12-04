@@ -1,4 +1,4 @@
-name: Build SafraDesk Client
+name: Build Saurus Remote
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ jobs:
     runs-on: windows-2022
     
     env:
-      # Configurações para evitar erros de biblioteca (Static Linking)
-      VCPKG_ROOT: "C:\\vcpkg"
-      VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
+      # Define variaveis para o compilador encontrar o Clang/LLVM
+      LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
+      # Garante que nao use API externa
       RUSTDESK_API_SERVER: "" 
 
     steps:
@@ -27,31 +27,34 @@ jobs:
       with:
         channel: 'stable'
 
-    # --- 1. CORREÇÃO DE AMBIENTE (LLVM & VCPKG) ---
-    - name: Install LLVM and Tools (Fix Opus Error)
+    # --- CORREÇÃO DO ERRO DE ÁUDIO (OPUS) ---
+    - name: Install LLVM (Required for Audio)
       run: |
         choco install llvm -y
+        # Adiciona ao PATH para garantir que o build encontre
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
-        echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       shell: powershell
 
-    - name: Setup VCPKG (Manual Install)
-      run: |
-        cd C:\vcpkg
-        git pull
-        .\bootstrap-vcpkg.bat
-        .\vcpkg integrate install
-        # Instala dependencias explicitamente antes do build
-        .\vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
-      shell: cmd
-
-    # --- 2. CUSTOMIZAÇÃO VISUAL (SAFRA) ---
+    # --- CUSTOMIZAÇÃO VISUAL (SAURUS REMOTE) ---
     - name: Apply Customizations (Branding)
       shell: powershell
       run: |
-        # --- A. CORES (Banco Safra: #1E2044) ---
-        # O RustDesk usa o azul 0xFF2196F3 como padrao no arquivo common.dart
-        # Vamos substituir pelo Azul Safra (0xFF1E2044)
+        # 1. DOWNLOAD DOS ÍCONES E LOGOS (Links do Saurus)
+        $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/Símbolo-Colorido-Fundo-Escuro.ico"
+        $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/Logo%20Horizontal%20-%20Colorido%20-%20Fundo%20Escuro%20(2).png"
+        
+        Write-Host "Baixando logos..."
+        # Substitui o icone do executavel (Windows)
+        Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico"
+        # Substitui o logo interno (Legado e UI)
+        Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png"
+        
+        # Tenta substituir o logo dentro da pasta do Flutter (Interface Moderna)
+        if (Test-Path "flutter/assets/images/logo.png") {
+            Invoke-WebRequest -Uri $UrlLogo -OutFile "flutter/assets/images/logo.png"
+        }
+
+        # 2. APLICAÇÃO DA COR (Azul Saurus: #1E2044)
         $SafraBlue = "0xFF1E2044" 
         $CommonFile = "flutter/lib/common.dart"
         
@@ -59,55 +62,48 @@ jobs:
             $c = Get-Content $CommonFile
             $c = $c -replace '0xFF2196F3', $SafraBlue
             $c | Set-Content $CommonFile
-            Write-Host "Cor Azul Safra aplicada!"
+            Write-Host "Cor Saurus aplicada!"
         }
 
-        # --- B. NOME DA APLICAÇÃO ---
+        # 3. NOME DA APLICAÇÃO E SERVIDOR
         $NovoNome = "Saurus Remote"
-        
-        # 1. Muda no arquivo de configuração interno
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        $c = Get-Content $ConfigFile
-        # Troca o nome padrao RustDesk pelo seu
-        $c = $c -replace 'APP_NAME.*=.*"Saurus Remote"', 'APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("'+$NovoNome+'"'
         
-        # 2. Configura servidor (Seu IP)
-        $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
-        $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
-        $c | Set-Content $ConfigFile
+        if (Test-Path $ConfigFile) {
+           $c = Get-Content $ConfigFile
+           
+           # Troca o nome APP_NAME (Logica segura)
+           $c = $c -replace 'pub const APP_NAME.*', 'pub const APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("Saurus Remote".to_string()));'
+           
+           # Configura IP (ID e Key iguais)
+           $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
+           $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+           
+           $c | Set-Content $ConfigFile
+        }
 
-        # 3. Muda o Titulo da Janela (C++)
+        # Muda o Titulo da Janela (C++)
         $WinMain = "windows/runner/main.cpp"
         if (Test-Path $WinMain) {
             $w = Get-Content $WinMain
             $w = $w -replace 'L"RustDesk"', 'L"'+$NovoNome+'"'
             $w | Set-Content $WinMain
         }
-
-        # --- C. ÍCONE E LOGO ---
-        # ATENÇÃO: Substitua as URLs abaixo pelos links diretos dos seus logos (.ico e .png)
-        # Se nao tiver URL agora, o script vai manter o original, mas nao vai quebrar.
         
-        # URL do seu icone .ico (Para o executavel)
-        $UrlIcone = "https://saurussoftware-my.sharepoint.com/:i:/g/personal/lucas_martins_saurus_com_br/IQDnd-NwIoB9T7wwEBkN7ca9AZgAOZ1n8Es0d4V8CQkWFLY?e=9ZJRym" 
-        # URL do seu logo .png (Para dentro do app)
-        $UrlLogo = "https://saurussoftware-my.sharepoint.com/:i:/g/personal/lucas_martins_saurus_com_br/IQCHzBSEs95mR5EPl63WdxGYAT_3V2JytyPp6m9HD6-0pkw?e=REhsTo"
+        Write-Host "Customizacoes completas aplicadas."
 
-        # Baixa e substitui (Descomente as linhas abaixo quando tiver as URLs reais)
-        Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico"
-        Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png"
-        Invoke-WebRequest -Uri $UrlLogo -OutFile "flutter/assets/images/logo.png"
-        
-        Write-Host "Customizacoes de Nome e Servidor aplicadas."
-
-    # --- 3. BUILD ---
-    - name: Build RustDesk Client
+    # --- BUILD ---
+    - name: Build Saurus Client
+      # O script build.py gerencia o VCPKG automaticamente (evita o erro do .bat manual)
       run: python build.py --windows-only
+      env:
+        # Força o modo static para gerar um .exe unico sem depender de DLLs externas
+        VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
 
     - name: Upload .exe
       uses: actions/upload-artifact@v4
       with:
-        name: SafraDesk-Client
+        name: Saurus-Remote-Client
         path: |
            target/release/rustdesk.exe
            output/rustdesk.exe
