@@ -8,12 +8,9 @@ jobs:
     runs-on: windows-2022
     
     env:
-      # --- CORREÇÃO DO ERRO ATUAL ---
-      # Define onde o VCPKG está instalado (Obrigatório para o magnum-opus)
+      # Caminhos essenciais
       VCPKG_ROOT: "C:\\vcpkg"
-      # Define variaveis para o compilador encontrar o Clang/LLVM
       LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
-      # Garante que nao use API externa
       RUSTDESK_API_SERVER: "" 
 
     steps:
@@ -45,12 +42,10 @@ jobs:
         $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
         
         Write-Host "Baixando logos..."
-        
-        # Baixa os arquivos
         Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico"
         Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png"
         
-        # Substitui o logo na pasta do Flutter (Interface Moderna)
+        # Substitui o logo na pasta do Flutter
         if (Test-Path "flutter/assets/images/logo.png") {
             Copy-Item "res/logo.png" -Destination "flutter/assets/images/logo.png" -Force
         }
@@ -58,7 +53,6 @@ jobs:
         # 2. APLICAÇÃO DA COR (Azul Saurus: #1E2044)
         $SafraBlue = "0xFF1E2044" 
         $CommonFile = "flutter/lib/common.dart"
-        
         if (Test-Path $CommonFile) {
             $c = Get-Content $CommonFile
             $c = $c -replace '0xFF2196F3', $SafraBlue
@@ -68,7 +62,6 @@ jobs:
 
         # 3. NOME DA APLICAÇÃO E SERVIDOR
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        
         if (Test-Path $ConfigFile) {
            $c = Get-Content $ConfigFile
            
@@ -78,7 +71,6 @@ jobs:
            # Configura IP
            $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
            $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
-           
            $c | Set-Content $ConfigFile
         }
 
@@ -89,15 +81,16 @@ jobs:
             $w = $w -replace 'L"RustDesk"', 'L"Saurus Remote"'
             $w | Set-Content $WinMain
         }
-        
         Write-Host "Customizacoes completas aplicadas."
 
-    # --- BUILD ---
+    # --- BUILD COM A CORREÇÃO DE BINDGEN ---
     - name: Build Saurus Client
-      # O script build.py deve conseguir achar o VCPKG_ROOT agora
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
+        # A MÁGICA ESTÁ AQUI EMBAIXO:
+        # Forçamos o Clang a olhar dentro da pasta include do VCPKG
+        BINDGEN_EXTRA_CLANG_ARGS: "-I C:\\vcpkg\\installed\\x64-windows-static\\include"
 
     - name: Upload .exe
       uses: actions/upload-artifact@v4
