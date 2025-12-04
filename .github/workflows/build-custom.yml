@@ -20,6 +20,13 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
+    # --- NOVO PASSO: INSTALAR GERADOR DE CÓDIGO ---
+    - name: Install Flutter Rust Bridge Codegen
+      run: |
+        # Instala a ferramenta necessaria para gerar o arquivo bridge_generated.rs
+        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
+      shell: powershell
+
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
@@ -31,7 +38,7 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS (CORREÇÃO DE LINKER) ---
+    # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS ---
     - name: Install Dependencies & Fix Paths
       shell: powershell
       run: |
@@ -51,15 +58,10 @@ jobs:
         if (Test-Path "$IncludePath\opus\opus_multistream.h") {
             Write-Host "SUCESSO: Dependencias encontradas."
             
-            # --- A MÁGICA PARA CORRIGIR O ERRO ATUAL ---
-            # 1. BINDGEN: Para achar os .h
+            # Variaveis para o compilador achar os headers e libs
             echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
             echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
-            
-            # 2. RUSTFLAGS: Para achar os .lib (opus.lib, vpx.lib) <- ISSO CONSERTA O ERRO DE AGORA
             echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
-            
-            # 3. VCPKG Root
             echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
         } else {
             Write-Error "ERRO: Dependencias nao encontradas apos instalacao."
