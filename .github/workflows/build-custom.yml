@@ -20,13 +20,6 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
-    # --- NOVO PASSO: INSTALAR GERADOR DE CÓDIGO ---
-    - name: Install Flutter Rust Bridge Codegen
-      run: |
-        # Instala a ferramenta necessaria para gerar o arquivo bridge_generated.rs
-        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
-      shell: powershell
-
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
@@ -37,6 +30,28 @@ jobs:
         choco install llvm -y
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
+
+    # --- PASSO NOVO: GERAR CÓDIGO BRIDGE ---
+    - name: Generate Bridge Code (Fix Missing File)
+      shell: powershell
+      run: |
+        # 1. Instala a ferramenta (Codegen)
+        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
+        
+        # 2. Adiciona o binario ao PATH (Garante que o comando funcione)
+        $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
+        
+        # 3. EXECUTA a geracao do arquivo que estava faltando
+        Write-Host "Gerando src/bridge_generated.rs..."
+        flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
+        
+        # Verificacao
+        if (Test-Path "src/bridge_generated.rs") {
+            Write-Host "SUCESSO: Arquivo de ponte gerado!"
+        } else {
+            Write-Error "FALHA CRITICA: O arquivo bridge_generated.rs nao foi criado."
+            exit 1
+        }
 
     # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS ---
     - name: Install Dependencies & Fix Paths
@@ -58,7 +73,7 @@ jobs:
         if (Test-Path "$IncludePath\opus\opus_multistream.h") {
             Write-Host "SUCESSO: Dependencias encontradas."
             
-            # Variaveis para o compilador achar os headers e libs
+            # Variaveis para o compilador
             echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
             echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
             echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
@@ -117,3 +132,11 @@ jobs:
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
+    
+    - name: Upload .exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saurus-Remote-Client
+        path: |
+           target/release/rustdesk.exe
+           output/rustdesk.exe
