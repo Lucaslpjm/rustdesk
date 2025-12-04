@@ -8,7 +8,6 @@ jobs:
     runs-on: windows-2022
     
     env:
-      # REMOVIDO VCPKG_ROOT FIXO para evitar conflito com Manifest Mode
       LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
       RUSTDESK_API_SERVER: "" 
 
@@ -32,32 +31,33 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- INSTALAÇÃO E CONFIGURAÇÃO DE CAMINHO (A CORREÇÃO) ---
+    # --- CORREÇÃO: FORÇAR INSTALAÇÃO ESTÁTICA ---
     - name: Install Dependencies & Fix Paths
       shell: powershell
       run: |
-        # 1. Instala dependencias usando o Manifest (vcpkg.json)
-        # Isso cria a pasta 'vcpkg_installed' dentro do diretorio atual
-        Write-Host "Instalando dependencias via VCPKG Manifest..."
-        vcpkg install
+        Write-Host "Forcando instalacao ESTATICA (x64-windows-static)..."
         
-        # 2. Descobre onde o Opus foi instalado
+        # 1. Instala explicitamente com o triplet estatico
+        vcpkg install --triplet x64-windows-static
+        
+        # 2. Caminho onde os arquivos ficarao
         $LocalInclude = Join-Path (Get-Location) "vcpkg_installed\x64-windows-static\include"
         
+        Write-Host "Verificando headers em: $LocalInclude"
+        
+        # Verificacao de Seguranca
         if (Test-Path "$LocalInclude\opus\opus_multistream.h") {
-            Write-Host "SUCESSO: Header do Opus encontrado em: $LocalInclude"
+            Write-Host "SUCESSO: Header do Opus encontrado!"
             
-            # 3. Injeta as variaveis para o PROXIMO passo (Build)
-            # O Clang precisa do argumento -I para saber onde procurar
+            # 3. Injeta as variaveis para o Build
             echo "BINDGEN_EXTRA_CLANG_ARGS=-I$LocalInclude" >> $env:GITHUB_ENV
-            
-            # CPATH tambem ajuda em alguns casos
             echo "CPATH=$LocalInclude" >> $env:GITHUB_ENV
-            
-            # Define o VCPKG_ROOT localmente para este build
             echo "VCPKG_ROOT=$(Get-Location)" >> $env:GITHUB_ENV
         } else {
-            Write-Error "ERRO CRITICO: Nao foi possivel encontrar os headers do Opus em $LocalInclude"
+            # Se falhar, lista o que tem na pasta para debug
+            Write-Warning "Arquivo nao encontrado. Listando conteudo da pasta:"
+            Get-ChildItem -Path "vcpkg_installed" -Recurse | Select-Object FullName
+            Write-Error "ERRO: O arquivo opus_multistream.h nao foi encontrado apos a instalacao."
             exit 1
         }
 
@@ -110,5 +110,5 @@ jobs:
     - name: Build Saurus Client
       run: python build.py --flutter
       env:
+        # Garante que o Python tambem saiba que é static
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
-        # As variaveis BINDGEN e CPATH foram injetadas pelo passo anterior
