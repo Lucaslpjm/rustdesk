@@ -23,7 +23,7 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.2' # Mantemos a versao estavel que funciona
+        flutter-version: '3.22.2' # Versao estavel para o código C++
         channel: 'stable'
 
     - name: Install LLVM
@@ -32,7 +32,26 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- PASSO CRÍTICO ADICIONADO: BAIXAR DEPENDÊNCIAS FLUTTER ---
+    # --- PASSO DE CORREÇÃO: DOWNGRADE DE DEPENDÊNCIA ---
+    - name: Fix Dependencies for Older Flutter
+      working-directory: ./flutter
+      shell: powershell
+      run: |
+        $File = "pubspec.yaml"
+        $Content = Get-Content $File
+        
+        Write-Host "Ajustando versoes conflitantes..."
+        
+        # Troca extended_text 14.0.0 (que pede Dart 3.5) por 13.0.0 (que aceita Dart 3.4)
+        $Content = $Content -replace 'extended_text: \^14.0.0', 'extended_text: ^13.0.0'
+        
+        # Salva o arquivo alterado
+        $Content | Set-Content $File
+        
+        Write-Host "Arquivo pubspec.yaml ajustado!"
+        Get-Content $File | Select-String "extended_text"
+
+    # --- PREPARAR DEPENDÊNCIAS ---
     - name: Prepare Flutter Dependencies
       working-directory: ./flutter
       run: flutter pub get
@@ -47,7 +66,6 @@ jobs:
       shell: powershell
       run: |
         $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
-        # Agora deve funcionar pois o 'flutter pub get' ja criou o package_config.json
         flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
 
     # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS ---
