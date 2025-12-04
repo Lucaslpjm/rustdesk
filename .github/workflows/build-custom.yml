@@ -8,7 +8,7 @@ jobs:
     runs-on: windows-2022
     
     env:
-      VCPKG_ROOT: "C:\\vcpkg"
+      # REMOVIDO VCPKG_ROOT FIXO para evitar conflito com Manifest Mode
       LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
       RUSTDESK_API_SERVER: "" 
 
@@ -32,13 +32,36 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- PASSO NOVO: PREPARAR DEPENDÊNCIAS (MODO MANIFEST) ---
-    - name: Install Dependencies (Manifest Mode)
-      # Roda sem argumentos. Ele le o vcpkg.json e instala tudo na pasta local 'vcpkg_installed'
-      run: vcpkg install
-      shell: cmd
+    # --- INSTALAÇÃO E CONFIGURAÇÃO DE CAMINHO (A CORREÇÃO) ---
+    - name: Install Dependencies & Fix Paths
+      shell: powershell
+      run: |
+        # 1. Instala dependencias usando o Manifest (vcpkg.json)
+        # Isso cria a pasta 'vcpkg_installed' dentro do diretorio atual
+        Write-Host "Instalando dependencias via VCPKG Manifest..."
+        vcpkg install
+        
+        # 2. Descobre onde o Opus foi instalado
+        $LocalInclude = Join-Path (Get-Location) "vcpkg_installed\x64-windows-static\include"
+        
+        if (Test-Path "$LocalInclude\opus\opus_multistream.h") {
+            Write-Host "SUCESSO: Header do Opus encontrado em: $LocalInclude"
+            
+            # 3. Injeta as variaveis para o PROXIMO passo (Build)
+            # O Clang precisa do argumento -I para saber onde procurar
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-I$LocalInclude" >> $env:GITHUB_ENV
+            
+            # CPATH tambem ajuda em alguns casos
+            echo "CPATH=$LocalInclude" >> $env:GITHUB_ENV
+            
+            # Define o VCPKG_ROOT localmente para este build
+            echo "VCPKG_ROOT=$(Get-Location)" >> $env:GITHUB_ENV
+        } else {
+            Write-Error "ERRO CRITICO: Nao foi possivel encontrar os headers do Opus em $LocalInclude"
+            exit 1
+        }
 
-    # --- CUSTOMIZAÇÃO VISUAL (SAURUS REMOTE) ---
+    # --- CUSTOMIZAÇÃO VISUAL ---
     - name: Apply Customizations (Branding)
       shell: powershell
       run: |
@@ -58,7 +81,7 @@ jobs:
             Write-Warning "Erro ao baixar logos. Usando padrao."
         }
 
-        # Cor Azul Saurus
+        # Cores e Nomes
         $SafraBlue = "0xFF1E2044" 
         $CommonFile = "flutter/lib/common.dart"
         if (Test-Path $CommonFile) {
@@ -67,7 +90,6 @@ jobs:
             $c | Set-Content $CommonFile
         }
 
-        # Nome e Servidor
         $ConfigFile = "libs/hbb_common/src/config.rs"
         if (Test-Path $ConfigFile) {
            $c = Get-Content $ConfigFile
@@ -83,22 +105,10 @@ jobs:
             $w = $w -replace 'L"RustDesk"', 'L"Saurus Remote"'
             $w | Set-Content $WinMain
         }
-        Write-Host "Customizacoes aplicadas."
 
     # --- BUILD FINAL ---
     - name: Build Saurus Client
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
-        # CORREÇÃO CRÍTICA: Aponta para a pasta LOCAL criada pelo Manifest Mode
-        # ${{ github.workspace }} pega o caminho exato onde o runner está rodando
-        BINDGEN_EXTRA_CLANG_ARGS: "-I${{ github.workspace }}/vcpkg_installed/x64-windows-static/include"
-        CPATH: "${{ github.workspace }}/vcpkg_installed/x64-windows-static/include"
-
-    - name: Upload .exe
-      uses: actions/upload-artifact@v4
-      with:
-        name: Saurus-Remote-Client
-        path: |
-           target/release/rustdesk.exe
-           output/rustdesk.exe
+        # As variaveis BINDGEN e CPATH foram injetadas pelo passo anterior
