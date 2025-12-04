@@ -20,13 +20,23 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
-    # --- CORREÇÃO DO ERRO ATUAL: TRAVAR VERSÃO DO FLUTTER ---
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        # Usamos a 3.22.2 para evitar erros de compatibilidade da versão mais nova
-        flutter-version: '3.22.2'
+        flutter-version: '3.22.2' # Mantemos a versao estavel que funciona
         channel: 'stable'
+
+    - name: Install LLVM
+      run: |
+        choco install llvm -y
+        echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+      shell: powershell
+
+    # --- PASSO CRÍTICO ADICIONADO: BAIXAR DEPENDÊNCIAS FLUTTER ---
+    - name: Prepare Flutter Dependencies
+      working-directory: ./flutter
+      run: flutter pub get
+      shell: cmd
 
     - name: Install Flutter Rust Bridge Codegen
       run: |
@@ -37,13 +47,8 @@ jobs:
       shell: powershell
       run: |
         $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
+        # Agora deve funcionar pois o 'flutter pub get' ja criou o package_config.json
         flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
-
-    - name: Install LLVM
-      run: |
-        choco install llvm -y
-        echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
-      shell: powershell
 
     # --- INSTALAÇÃO E CONFIGURAÇÃO DE LIBRARIAS ---
     - name: Install Dependencies & Fix Paths
