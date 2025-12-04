@@ -8,6 +8,9 @@ jobs:
     runs-on: windows-2022
     
     env:
+      # --- CORREÇÃO DO ERRO ATUAL ---
+      # Define onde o VCPKG está instalado (Obrigatório para o magnum-opus)
+      VCPKG_ROOT: "C:\\vcpkg"
       # Define variaveis para o compilador encontrar o Clang/LLVM
       LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
       # Garante que nao use API externa
@@ -27,7 +30,6 @@ jobs:
       with:
         channel: 'stable'
 
-    # --- CORREÇÃO DO ERRO DE ÁUDIO (OPUS) ---
     - name: Install LLVM (Required for Audio)
       run: |
         choco install llvm -y
@@ -38,13 +40,13 @@ jobs:
     - name: Apply Customizations (Branding)
       shell: powershell
       run: |
-        # 1. DOWNLOAD DOS ÍCONES E LOGOS (Links Saurus Corrigidos)
+        # 1. DOWNLOAD DOS ÍCONES E LOGOS (Links Saurus)
         $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/icoRust.ico"
         $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
         
         Write-Host "Baixando logos..."
         
-        # Baixa os arquivos (Agora sem acentos na URL, deve funcionar 100%)
+        # Baixa os arquivos
         Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico"
         Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png"
         
@@ -65,7 +67,6 @@ jobs:
         }
 
         # 3. NOME DA APLICAÇÃO E SERVIDOR
-        $NovoNome = "Saurus Remote"
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
         if (Test-Path $ConfigFile) {
@@ -74,30 +75,28 @@ jobs:
            # Troca o nome APP_NAME
            $c = $c -replace 'pub const APP_NAME.*', 'pub const APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("Saurus Remote".to_string()));'
            
-           # Configura IP (ID e Key iguais)
+           # Configura IP
            $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
            $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
            
            $c | Set-Content $ConfigFile
         }
 
-        # Muda o Titulo da Janela (C++)
+        # Muda o Titulo da Janela
         $WinMain = "windows/runner/main.cpp"
         if (Test-Path $WinMain) {
             $w = Get-Content $WinMain
-            $w = $w -replace 'L"RustDesk"', 'L"'+$NovoNome+'"'
+            $w = $w -replace 'L"RustDesk"', 'L"Saurus Remote"'
             $w | Set-Content $WinMain
         }
         
         Write-Host "Customizacoes completas aplicadas."
 
-    # --- BUILD CORRIGIDO ---
+    # --- BUILD ---
     - name: Build Saurus Client
-      # REMOVIDO --windows-only (que não existe mais)
-      # ADICIONADO --flutter (para garantir que a UI com cores seja construída)
+      # O script build.py deve conseguir achar o VCPKG_ROOT agora
       run: python build.py --flutter
       env:
-        # Força o modo static para gerar um .exe unico
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
 
     - name: Upload .exe
