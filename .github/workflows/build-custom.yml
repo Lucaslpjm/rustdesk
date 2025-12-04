@@ -8,7 +8,6 @@ jobs:
     runs-on: windows-2022
     
     env:
-      # Caminhos essenciais
       VCPKG_ROOT: "C:\\vcpkg"
       LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
       RUSTDESK_API_SERVER: "" 
@@ -27,25 +26,22 @@ jobs:
       with:
         channel: 'stable'
 
-    # 1. INSTALAÇÃO DO LLVM (Obrigatório para o Opus)
-    - name: Install LLVM
+    - name: Install LLVM (Required for Audio)
       run: |
         choco install llvm -y
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # 2. INSTALAÇÃO MANUAL DAS DEPENDÊNCIAS (A "Marreta")
-    # Isso garante que os arquivos .h existam fisicamente no disco antes do build começar
-    - name: Force Install Dependencies via VCPKG
-      run: |
-        vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
+    # --- PASSO NOVO: PREPARAR DEPENDÊNCIAS (MODO MANIFEST) ---
+    - name: Install Dependencies (Manifest Mode)
+      # Roda sem argumentos. Ele le o vcpkg.json e instala tudo na pasta local 'vcpkg_installed'
+      run: vcpkg install
       shell: cmd
 
     # --- CUSTOMIZAÇÃO VISUAL (SAURUS REMOTE) ---
     - name: Apply Customizations (Branding)
       shell: powershell
       run: |
-        # Links fornecidos por voce
         $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/icoRust.ico"
         $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
         
@@ -54,59 +50,50 @@ jobs:
             Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico" -ErrorAction Stop
             Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png" -ErrorAction Stop
             
-            # Copia para pasta do Flutter
             if (Test-Path "flutter/assets/images/logo.png") {
                 Copy-Item "res/logo.png" -Destination "flutter/assets/images/logo.png" -Force
             }
-            Write-Host "Logos baixados com sucesso!"
+            Write-Host "Logos baixados!"
         } catch {
-            Write-Warning "Erro ao baixar logos. Verifique os links. O build continuara com logos padrao."
+            Write-Warning "Erro ao baixar logos. Usando padrao."
         }
 
-        # Cor Azul Saurus (#1E2044)
+        # Cor Azul Saurus
         $SafraBlue = "0xFF1E2044" 
         $CommonFile = "flutter/lib/common.dart"
         if (Test-Path $CommonFile) {
             $c = Get-Content $CommonFile
             $c = $c -replace '0xFF2196F3', $SafraBlue
             $c | Set-Content $CommonFile
-            Write-Host "Cor Saurus aplicada!"
         }
 
-        # Nome da Aplicação e Servidor
+        # Nome e Servidor
         $ConfigFile = "libs/hbb_common/src/config.rs"
         if (Test-Path $ConfigFile) {
            $c = Get-Content $ConfigFile
-           
-           # Nome APP_NAME
            $c = $c -replace 'pub const APP_NAME.*', 'pub const APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("Saurus Remote".to_string()));'
-           
-           # Configura IP
            $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
            $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
            $c | Set-Content $ConfigFile
         }
 
-        # Titulo da Janela
         $WinMain = "windows/runner/main.cpp"
         if (Test-Path $WinMain) {
             $w = Get-Content $WinMain
             $w = $w -replace 'L"RustDesk"', 'L"Saurus Remote"'
             $w | Set-Content $WinMain
         }
-        Write-Host "Customizacoes completas aplicadas."
+        Write-Host "Customizacoes aplicadas."
 
-    # --- BUILD ---
+    # --- BUILD FINAL ---
     - name: Build Saurus Client
       run: python build.py --flutter
       env:
-        # Garante tripla estatica
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
-        # CORREÇÃO CRÍTICA:
-        # 1. Usa barras normais (/) para evitar erro de escape do Windows
-        # 2. Define CPATH que é onde o Clang busca headers nativamente
-        BINDGEN_EXTRA_CLANG_ARGS: "-IC:/vcpkg/installed/x64-windows-static/include"
-        CPATH: "C:\\vcpkg\\installed\\x64-windows-static\\include"
+        # CORREÇÃO CRÍTICA: Aponta para a pasta LOCAL criada pelo Manifest Mode
+        # ${{ github.workspace }} pega o caminho exato onde o runner está rodando
+        BINDGEN_EXTRA_CLANG_ARGS: "-I${{ github.workspace }}/vcpkg_installed/x64-windows-static/include"
+        CPATH: "${{ github.workspace }}/vcpkg_installed/x64-windows-static/include"
 
     - name: Upload .exe
       uses: actions/upload-artifact@v4
