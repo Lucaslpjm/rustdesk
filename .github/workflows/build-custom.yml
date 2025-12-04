@@ -135,10 +135,14 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
+# --- PASSO FINAL CORRIGIDO: ENCONTRAR E BAIXAR O ARQUIVO ---
     - name: Upload .exe
       uses: actions/upload-artifact@v4
       with:
         name: Saurus-Remote-Client
         path: |
-           target/release/rustdesk.exe
-           output/rustdesk.exe
+           # Tenta encontrar em todas as pastas padrao de build do Flutter/Rust
+           build/windows/runner/Release/*.exe
+           build/windows/x64/runner/Release/*.exe
+           target/release/*.exe
+           output/*.exe
