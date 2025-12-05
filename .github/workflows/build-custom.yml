@@ -1,4 +1,4 @@
-name: Build Saurus Remote (Syntax Fix)
+name: Build Saurus Remote (Gold Release)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES ---
+    # --- CACHES (Para ser rapido) ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -58,26 +58,26 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR (CORRIGIDA) ---
+    # --- CONFIGURAÇÃO VENCEDORA (ID NA 443) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor: 20.195.216.23:80..."
+        Write-Host "Configurando servidor: 20.195.216.23:443..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # --- DADOS CORRIGIDOS ---
-        # Removido o /tcp que causava erro de sintaxe
-        $SeuIP = "20.195.216.23:80" 
-        # Chave com o = no final
+        # --- DADOS DO TESTE DE SUCESSO ---
+        # ID Server na 443 (Passa pelo firewall como HTTPS)
+        $SeuIP = "20.195.216.23:443" 
+        # Sua chave (com o = no final)
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
            
-           # ID SERVER
+           # Injeta o IP
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            
-           # KEY
+           # Injeta a Key
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
            
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
@@ -86,7 +86,7 @@ jobs:
            exit 1
         }
 
-    # --- DEPENDÊNCIAS ---
+    # --- CORREÇÃO DE DEPENDÊNCIAS ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -134,7 +134,7 @@ jobs:
     - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "Saurus_Remote_Fixed"
+        New-Item -ItemType Directory -Force -Path "Saurus_Remote_Final"
         
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
@@ -142,14 +142,14 @@ jobs:
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
             
-            Write-Host "Copiando de: $SourceFolder"
-            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Remote_Fixed" -Recurse -Force
+            Write-Host "Empacotando..."
+            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Remote_Final" -Recurse -Force
             
-            # Mantemos o nome rustdesk.exe para evitar crash no instalador
+            # Mantemos o nome rustdesk.exe para o instalador nao bugar
         } else { exit 1 }
 
-    - name: Upload Saurus Client
+    - name: Upload Final Client
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Remote-Fixed
-        path: Saurus_Remote_Fixed
+        name: Saurus-Remote-Final
+        path: Saurus_Remote_Final
