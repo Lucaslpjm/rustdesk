@@ -1,4 +1,4 @@
-name: Build Saurus Remote (Gold Release)
+name: Build Saurus Installer (Single File)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES (Para ser rapido) ---
+    # --- CACHES ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -42,7 +42,7 @@ jobs:
         restore-keys: |
           flutter-pub-${{ runner.os }}-
 
-    # --- SETUP ---
+    # --- SETUP FERRAMENTAS ---
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
@@ -52,41 +52,32 @@ jobs:
         flutter-version: '3.22.2'
         channel: 'stable'
 
-    - name: Install LLVM
+    - name: Install LLVM & Inno Setup
       run: |
         choco install llvm -y
+        # Instala o criador de instaladores
+        choco install innosetup -y
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO VENCEDORA (ID NA 443) ---
+    # --- CONFIGURAÇÃO (IP HARDCODED) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
         Write-Host "Configurando servidor: 20.195.216.23:443..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # --- DADOS DO TESTE DE SUCESSO ---
-        # ID Server na 443 (Passa pelo firewall como HTTPS)
         $SeuIP = "20.195.216.23:443" 
-        # Sua chave (com o = no final)
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
-           
-           # Injeta o IP
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
-           
-           # Injeta a Key
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
-           
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           Write-Host "Configuracao aplicada com sucesso!"
-        } else {
-           exit 1
-        }
+        } else { exit 1 }
 
-    # --- CORREÇÃO DE DEPENDÊNCIAS ---
+    # --- CORREÇÃO E COMPILAÇÃO ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -124,32 +115,38 @@ jobs:
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
         echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
-    # --- BUILD ---
     - name: Build RustDesk
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- EMPACOTAMENTO ---
-    - name: Prepare Output
+    # --- CRIAÇÃO DO INSTALADOR ÚNICO ---
+    - name: Build Installer (Inno Setup)
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "Saurus_Remote_Final"
+        Write-Host "Preparando arquivos para o Instalador..."
         
-        $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
+        # 1. Cria a pasta padrao que o script do Inno Setup espera
+        New-Item -ItemType Directory -Force -Path "target\release"
         
-        if ($Files) {
-            $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            $SourceFolder = $Best.Directory.FullName
-            
-            Write-Host "Empacotando..."
-            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Remote_Final" -Recurse -Force
-            
-            # Mantemos o nome rustdesk.exe para o instalador nao bugar
-        } else { exit 1 }
+        # 2. Encontra onde o Flutter gerou os arquivos
+        $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
+        $SourceFolder = $Files.Directory.FullName
+        
+        # 3. Copia TUDO (exe, dlls, data) para 'target/release'
+        Copy-Item -Path "$SourceFolder\*" -Destination "target\release" -Recurse -Force
+        
+        # 4. Roda o Inno Setup para gerar o .exe unico
+        Write-Host "Gerando Instalador..."
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" resources\rustdesk.iss
+        
+        # 5. Renomeia o resultado
+        if (Test-Path "target\release\rustdesk-1.2.4-x86_64.exe") {
+            Rename-Item "target\release\rustdesk-1.2.4-x86_64.exe" "Saurus_Instalador.exe"
+        }
 
-    - name: Upload Final Client
+    - name: Upload Single Installer
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Remote-Final
-        path: Saurus_Remote_Final
+        name: Saurus-Setup
+        path: target/release/Saurus_Instalador.exe
