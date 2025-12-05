@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES (Aceleradores) ---
+    # --- CACHES ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -57,7 +57,7 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- SETUP DO AMBIENTE ---
+    # --- SETUP AMBIENTE ---
     - name: Force Downgrade extended_text
       working-directory: ./flutter
       shell: powershell
@@ -143,32 +143,38 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- UPLOAD COM BUSCA GLOBAL (CORRIGIDO) ---
-    - name: Find and Prepare Exe (Global Search)
+    # --- CORREÇÃO: COPIAR PASTA COMPLETA (COM DLLs) ---
+    - name: Find and Prepare Portable Folder
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "SAIDA_FINAL"
         Write-Host "Varrendo diretorio raiz em busca de rustdesk.exe..."
         
-        # Procura em TUDO (.), nao so em 'build', e pega o arquivo mais recente
+        # Encontra o executavel
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
-            # Se achou mais de um, pega o ultimo modificado
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            Write-Host "ENCONTRADO: $($Best.FullName)"
+            Write-Host "EXECUTAVEL ENCONTRADO: $($Best.FullName)"
             
-            Copy-Item -Path $Best.FullName -Destination "SAIDA_FINAL\SaurusRemote.exe"
-            Write-Host "Copiado com sucesso!"
+            # Pega a pasta onde o executavel esta (que contem as DLLs e pasta data)
+            $SourceFolder = $Best.Directory.FullName
+            Write-Host "Copiando TODO o conteudo de: $SourceFolder"
+            
+            # Copia TUDO (exe, dlls, pasta data) para a saida
+            Copy-Item -Path "$SourceFolder\*" -Destination "SAIDA_FINAL" -Recurse -Force
+            
+            # Renomeia o executavel na saida
+            Rename-Item -Path "SAIDA_FINAL\rustdesk.exe" -NewName "SaurusRemote.exe"
+            
+            Write-Host "Pasta portatil criada com sucesso!"
         } else {
             Write-Error "ERRO CRITICO: Nenhum rustdesk.exe encontrado em lugar nenhum!"
-            # Lista estrutura de pastas para debug
-            Get-ChildItem -Path . -Directory
             exit 1
         }
 
-    - name: Upload .exe
+    - name: Upload Portable Package
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Remote-Client
+        name: Saurus-Remote-Portable
         path: SAIDA_FINAL
