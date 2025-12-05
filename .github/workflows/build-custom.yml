@@ -1,4 +1,4 @@
-name: Build Saurus Installer (Generator Fix)
+name: Build Saurus Installer (Clean & Light)
 
 on:
   workflow_dispatch:
@@ -59,14 +59,13 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR ---
+    # --- CONFIGURAÇÃO ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
         Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # ID na 80, Relay na 443, Key com =
         $SeuIP = "20.195.216.23:80" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
@@ -120,19 +119,30 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- CRIAÇÃO DO INSTALADOR (SCRIPT GERADO NA HORA) ---
-    - name: Create and Run Installer
+    # --- CRIAÇÃO DO INSTALADOR (LIMPEZA DE ARQUIVOS) ---
+    - name: Create Clean Installer
       shell: powershell
       run: |
-        Write-Host "Preparando arquivos..."
-        New-Item -ItemType Directory -Force -Path "target\release"
+        Write-Host "Preparando arquivos LIMPOS para o Instalador..."
         
-        # 1. Copia os arquivos compilados para a pasta de stage
+        # Pasta temporaria limpa
+        $StageDir = "Staging_Area"
+        New-Item -ItemType Directory -Force -Path $StageDir
+        
+        # 1. Encontra a origem
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
         $SourceFolder = $Files.Directory.FullName
-        Copy-Item -Path "$SourceFolder\*" -Destination "target\release" -Recurse -Force
         
-        # 2. CRIA O ARQUIVO .ISS MANUALMENTE (Aqui está a mágica)
+        Write-Host "Copiando apenas arquivos essenciais de: $SourceFolder"
+        
+        # 2. Copia APENAS o essencial (Ignora .pdb, .iobj, etc)
+        Copy-Item "$SourceFolder\rustdesk.exe" $StageDir
+        Copy-Item "$SourceFolder\*.dll" $StageDir
+        if (Test-Path "$SourceFolder\data") {
+            Copy-Item "$SourceFolder\data" $StageDir -Recurse
+        }
+        
+        # 3. Cria o arquivo .ISS configurado para a pasta Staging_Area
         $IssContent = @"
         [Setup]
         AppName=Saurus Remote
@@ -147,11 +157,10 @@ jobs:
         PrivilegesRequired=lowest
 
         [Files]
-        ; Pega tudo da pasta que preparamos e coloca no instalador
-        Source: "target\release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        ; Pega os arquivos da pasta limpa
+        Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
         [Icons]
-        ; Cria atalho no Menu Iniciar e Desktop
         Name: "{group}\Saurus Remote"; Filename: "{app}\rustdesk.exe"
         Name: "{autodesktop}\Saurus Remote"; Filename: "{app}\rustdesk.exe"; Tasks: desktopicon
 
@@ -159,15 +168,14 @@ jobs:
         Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
         "@
         
-        # Salva o arquivo .iss no disco
         Set-Content -Path "saurus_setup.iss" -Value $IssContent -Encoding ASCII
         
-        # 3. Roda o compilador Inno Setup
-        Write-Host "Compilando o Instalador..."
+        # 4. Compila
+        Write-Host "Compilando Instalador..."
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" saurus_setup.iss
 
-    - name: Upload Single Installer
+    - name: Upload Installer
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Setup
+        name: Saurus-Setup-Lite
         path: Saurus_Instalador.exe
