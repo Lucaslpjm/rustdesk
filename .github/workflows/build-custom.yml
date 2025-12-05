@@ -1,4 +1,4 @@
-name: Build Saurus Server-Only
+name: Build RustDesk (Server Custom Only)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES (Para ser rapido) ---
+    # --- CACHES (Aceleração) ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -42,14 +42,14 @@ jobs:
         restore-keys: |
           flutter-pub-${{ runner.os }}-
 
-    # --- SETUP FERRAMENTAS ---
+    # --- SETUP BÁSICO ---
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.2' # Versao estavel obrigatoria
+        flutter-version: '3.22.2' # Versao estavel 100% compativel
         channel: 'stable'
 
     - name: Install LLVM
@@ -58,35 +58,36 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- A ÚNICA CUSTOMIZAÇÃO (SERVIDOR) ---
-    - name: Hardcode Server IP
+    # --- CONFIGURAÇÃO DO SERVIDOR (IP) ---
+    # Esta é a UNICA alteração no código original
+    - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Injetando IP 20.195.216.23 no codigo fonte..."
-        
+        Write-Host "Configurando servidor para 20.195.216.23..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
+        
         if (Test-Path $ConfigFile) {
-           $c = Get-Content $ConfigFile
+           $content = Get-Content $ConfigFile -Raw
            
-           # 1. Define Servidores de ID e Relay
-           $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
+           # Substitui servidor padrao pelo seu IP
+           $content = $content -replace 'pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
            
-           # 2. Define a Key (usando o IP conforme seu setup)
-           $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+           # Substitui a chave publica pelo IP (conforme seu setup)
+           $content = $content -replace 'pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
            
-           $c | Set-Content $ConfigFile
-           Write-Host "Sucesso: Servidor configurado no codigo."
+           Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
+           Write-Host "Configuracao de servidor aplicada com sucesso!"
         } else {
-           Write-Error "Erro: Arquivo config.rs nao encontrado."
+           Write-Error "Arquivo de configuracao nao encontrado!"
            exit 1
         }
 
-    # --- PREPARAÇÃO DO AMBIENTE (Correções Tecnicas) ---
+    # --- CORREÇÃO DE DEPENDÊNCIAS (Obrigatório) ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
       run: |
-        # Corrige incompatibilidade de versoes do Flutter antigo
+        # Ajusta versao do extended_text para funcionar com Flutter 3.22
         $File = "pubspec.yaml"
         $Content = Get-Content $File -Raw
         $NewContent = $Content -replace 'extended_text:.*', 'extended_text: ^13.0.0'
@@ -108,10 +109,10 @@ jobs:
         $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
         flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
 
-    - name: Install C++ Dependencies (VCPKG)
+    - name: Install C++ Libs (VCPKG)
       shell: powershell
       run: |
-        Write-Host "Verificando dependencias C++..."
+        Write-Host "Instalando dependencias C++..."
         vcpkg install --triplet x64-windows-static
         
         $BaseDir = Get-Location
@@ -129,33 +130,31 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- EMPACOTAR TUDO (EXE + DLLs) ---
-    - name: Package Portable Version
+    # --- EMPACOTAMENTO (Sem renomear o executavel) ---
+    - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "SaurusRemote"
+        New-Item -ItemType Directory -Force -Path "RustDesk_Custom_Server"
         
-        # Encontra onde o Flutter gerou o executavel e as DLLs
+        # Encontra o executavel original
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
+            # Pega o arquivo mais recente (o que acabamos de compilar)
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
             
-            Write-Host "Empacotando conteudo de: $SourceFolder"
+            Write-Host "Copiando pasta completa: $SourceFolder"
+            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Custom_Server" -Recurse -Force
             
-            # Copia a pasta inteira (exe, dlls, data) para garantir que funcione
-            Copy-Item -Path "$SourceFolder\*" -Destination "SaurusRemote" -Recurse -Force
-            
-            # Renomeia o executavel
-            Rename-Item -Path "SaurusRemote\rustdesk.exe" -NewName "SaurusRemote.exe"
+            Write-Host "Pacote pronto em RustDesk_Custom_Server (Mantendo nome original rustdesk.exe)"
         } else {
             Write-Error "ERRO: Executavel nao encontrado."
             exit 1
         }
 
-    - name: Upload Saurus Remote
+    - name: Upload Custom Client
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Remote-Portable
-        path: SaurusRemote
+        name: RustDesk-Custom-Server
+        path: RustDesk_Custom_Server
