@@ -1,4 +1,4 @@
-name: Build Saurus Remote (Final Key Fix)
+name: Build RustDesk (Force TCP Fix)
 
 on:
   workflow_dispatch:
@@ -58,29 +58,29 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR (A CORREÇÃO FINAL) ---
+    # --- CONFIGURAÇÃO DO SERVIDOR (FORCE TCP) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor..."
+        Write-Host "Configurando servidor: 20.195.216.23:80/tcp..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # --- SEUS DADOS REAIS ---
-        $SeuIP = "20.195.216.23"
-        $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc" # A chave real que voce pegou no servidor
+        # --- SEUS DADOS ---
+        # Adicionei o sufixo /tcp para forcar conexao via TCP
+        $SeuIP = "20.195.216.23:80/tcp" 
+        $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
            
-           # 1. ID SERVER (Porta 80)
-           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP:80`"];"
+           # 1. ID SERVER (Com /tcp)
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            
-           # 2. KEY REAL (A chave criptografica)
+           # 2. KEY
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
            
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           
-           Write-Host "Configuracao aplicada com a Chave Real!"
+           Write-Host "Configuracao aplicada!"
         } else {
            exit 1
         }
@@ -133,18 +133,17 @@ jobs:
     - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "RustDesk_Saurus"
+        New-Item -ItemType Directory -Force -Path "RustDesk_Custom_TCP"
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
-            Write-Host "Empacotando..."
-            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Saurus" -Recurse -Force
+            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Custom_TCP" -Recurse -Force
         } else { exit 1 }
 
-    - name: Upload Saurus Client
+    - name: Upload Custom Client
       uses: actions/upload-artifact@v4
       with:
-        name: RustDesk-Saurus-Final
-        path: RustDesk_Saurus
+        name: RustDesk-Force-TCP
+        path: RustDesk_Custom_TCP
