@@ -1,4 +1,4 @@
-name: Build RustDesk (Fixed Config)
+name: Build Saurus Safra Edition
 
 on:
   workflow_dispatch:
@@ -58,35 +58,56 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR (CORREÇÃO CRÍTICA) ---
+    # --- 1. CUSTOMIZAÇÃO VISUAL (SAFRA: AZUL & DOURADO) ---
+    - name: Apply Safra Theme (Colors)
+      shell: powershell
+      run: |
+        Write-Host "Aplicando identidade visual Banco Safra (Blue & Gold)..."
+        $ThemeFile = "flutter/lib/common.dart"
+        
+        if (Test-Path $ThemeFile) {
+           $content = Get-Content $ThemeFile -Raw
+           
+           # --- PALETA SAFRA ---
+           $SafraNavy = "0xFF132047"  # Azul Escuro Profundo (Para Botoes/Topo)
+           $SafraGold = "0xFFD4AF37"  # Dourado Metalico (Para Detalhes/Selecao)
+           $CleanWhite = "0xFFFFFFFF" # Branco Puro (Para limpar o cinza)
+           
+           # 1. Substitui o AZUL PADRAO pelo AZUL SAFRA
+           # (Afeta botao conectar, abas ativas, titulos)
+           $content = $content -replace '0xFF2196F3', $SafraNavy
+           
+           # 2. Substitui o AZUL CLARO (Hover/Selection) pelo DOURADO SAFRA
+           # O RustDesk usa muito o azul '1890ff' ou variações para focos
+           $content = $content -replace '0xFF1890ff', $SafraGold
+           $content = $content -replace '0xFF409EFF', $SafraGold
+           
+           # 3. Tenta limpar o CINZA da Lateral para BRANCO (Mais elegante)
+           # O cinza padrao costuma ser F5F5F5 ou FAFAFA
+           $content = $content -replace '0xFFF5F5F5', $CleanWhite
+           $content = $content -replace '0xFFFAFAFA', $CleanWhite
+           
+           Set-Content -Path $ThemeFile -Value $content -Encoding UTF8
+           Write-Host "Tema Safra aplicado: Azul $SafraNavy e Dourado $SafraGold"
+        } else {
+           Write-Warning "Arquivo de tema nao encontrado."
+        }
+
+    # --- 2. CONFIGURAÇÃO DO SERVIDOR ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor para 20.195.216.23..."
+        Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
         if (Test-Path $ConfigFile) {
-           # Le o arquivo inteiro como uma unica string crua
            $content = Get-Content $ConfigFile -Raw
-           
-           # CORREÇÃO: (?s) ativa o modo "SingleLine" onde o ponto (.) pega quebras de linha
-           # Isso substitui todo o bloco de definição dos servidores originais
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
-           
-           # Substitui a chave publica
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
-           
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           
-           # Debug: Mostra se a troca aconteceu mesmo
-           Write-Host "--- VERIFICACAO ---"
-           Select-String -InputObject $content -Pattern "20.195.216.23"
-        } else {
-           Write-Error "Arquivo config.rs nao encontrado!"
-           exit 1
         }
 
-    # --- CORREÇÃO DE DEPENDÊNCIAS ---
+    # --- 3. DEPENDÊNCIAS ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -115,7 +136,7 @@ jobs:
     - name: Install C++ Libs (VCPKG)
       shell: powershell
       run: |
-        Write-Host "Instalando dependencias C++..."
+        Write-Host "Verificando cache C++..."
         vcpkg install --triplet x64-windows-static
         
         $BaseDir = Get-Location
@@ -127,7 +148,6 @@ jobs:
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
         echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
-    # --- BUILD ---
     - name: Build RustDesk
       run: python build.py --flutter
       env:
@@ -137,7 +157,7 @@ jobs:
     - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "RustDesk_Custom_Server"
+        New-Item -ItemType Directory -Force -Path "Saurus_Safra_Gold"
         
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
@@ -145,17 +165,14 @@ jobs:
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
             
-            Write-Host "Copiando pasta completa: $SourceFolder"
-            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Custom_Server" -Recurse -Force
-            
-            Write-Host "Pacote pronto em RustDesk_Custom_Server"
+            Write-Host "Empacotando..."
+            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Safra_Gold" -Recurse -Force
         } else {
-            Write-Error "ERRO: Executavel nao encontrado."
             exit 1
         }
 
-    - name: Upload Custom Client
+    - name: Upload Safra Gold Edition
       uses: actions/upload-artifact@v4
       with:
-        name: RustDesk-Custom-Server
-        path: RustDesk_Custom_Server
+        name: Saurus-Safra-Gold
+        path: Saurus_Safra_Gold
