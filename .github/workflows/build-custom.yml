@@ -1,4 +1,4 @@
-name: Build RustDesk (Port 80/443 Fix)
+name: Build Saurus Remote (Final Key Fix)
 
 on:
   workflow_dispatch:
@@ -58,31 +58,30 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR (CORREÇÃO DE PORTAS) ---
+    # --- CONFIGURAÇÃO DO SERVIDOR (A CORREÇÃO FINAL) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor: ID na porta 80, Key sem porta..."
+        Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
+        
+        # --- SEUS DADOS REAIS ---
+        $SeuIP = "20.195.216.23"
+        $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc" # A chave real que voce pegou no servidor
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
            
-           # 1. RENDEZVOUS (ID SERVER) -> PORTA 80
-           # O cliente conecta aqui via HTTP (Porta 80) para passar pelo firewall
-           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23:80"];'
+           # 1. ID SERVER (Porta 80)
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP:80`"];"
            
-           # 2. KEY -> SEM PORTA (Apenas o IP)
-           # A chave de criptografia é baseada apenas no IP
-           $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+           # 2. KEY REAL (A chave criptografica)
+           $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
            
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
            
-           # Validacao no log
-           Write-Host "--- VALIDACAO ---"
-           Get-Content $ConfigFile | Select-String "20.195.216.23"
+           Write-Host "Configuracao aplicada com a Chave Real!"
         } else {
-           Write-Error "Arquivo config.rs nao encontrado!"
            exit 1
         }
 
@@ -115,13 +114,10 @@ jobs:
     - name: Install C++ Libs (VCPKG)
       shell: powershell
       run: |
-        Write-Host "Verificando dependencias C++..."
         vcpkg install --triplet x64-windows-static
-        
         $BaseDir = Get-Location
         $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
         $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
-        
         echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
         echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
@@ -137,24 +133,18 @@ jobs:
     - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "RustDesk_Custom_Client"
-        
+        New-Item -ItemType Directory -Force -Path "RustDesk_Saurus"
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
-            
-            Write-Host "Empacotando pasta: $SourceFolder"
-            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Custom_Client" -Recurse -Force
-            
-            Write-Host "Sucesso! Executavel mantido como rustdesk.exe para compatibilidade."
-        } else {
-            exit 1
-        }
+            Write-Host "Empacotando..."
+            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Saurus" -Recurse -Force
+        } else { exit 1 }
 
-    - name: Upload Custom Client
+    - name: Upload Saurus Client
       uses: actions/upload-artifact@v4
       with:
-        name: RustDesk-Custom-Client
-        path: RustDesk_Custom_Client
+        name: RustDesk-Saurus-Final
+        path: RustDesk_Saurus
