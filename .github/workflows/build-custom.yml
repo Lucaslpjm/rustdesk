@@ -102,16 +102,29 @@ jobs:
             }
         } catch { Write-Warning "Nao foi possivel baixar o logo." }
 
-    # --- CONFIGURAÇÃO DO SERVIDOR ---
+ # --- CONFIGURAÇÃO DO SERVIDOR (PORTA 443) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
+        Write-Host "Configurando servidor para 20.195.216.23:443..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
+        
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
+           
+           # 1. RENDEZVOUS: AQUI VAI A PORTA (:443)
+           # Isso diz para o programa: "Conecte neste IP, usando a porta 443"
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23:443"];'
+           
+           # 2. KEY: AQUI NÃO VAI A PORTA (Apenas o IP puro)
+           # Isso é a "senha". O servidor espera apenas o IP, sem o :443
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+           
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
+           Write-Host "Configuracao aplicada: Porta 443 definida!"
+        } else {
+           Write-Error "Arquivo config.rs nao encontrado!"
+           exit 1
         }
 
     # --- DEPENDÊNCIAS E COMPILAÇÃO ---
