@@ -1,4 +1,4 @@
-name: Build RustDesk (Server Custom Only)
+name: Build RustDesk (Fixed Config)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES (Aceleração) ---
+    # --- CACHES ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -42,14 +42,14 @@ jobs:
         restore-keys: |
           flutter-pub-${{ runner.os }}-
 
-    # --- SETUP BÁSICO ---
+    # --- SETUP ---
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.2' # Versao estavel 100% compativel
+        flutter-version: '3.22.2'
         channel: 'stable'
 
     - name: Install LLVM
@@ -58,8 +58,7 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR (IP) ---
-    # Esta é a UNICA alteração no código original
+    # --- CONFIGURAÇÃO DO SERVIDOR (CORREÇÃO CRÍTICA) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
@@ -67,27 +66,31 @@ jobs:
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
         if (Test-Path $ConfigFile) {
+           # Le o arquivo inteiro como uma unica string crua
            $content = Get-Content $ConfigFile -Raw
            
-           # Substitui servidor padrao pelo seu IP
-           $content = $content -replace 'pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
+           # CORREÇÃO: (?s) ativa o modo "SingleLine" onde o ponto (.) pega quebras de linha
+           # Isso substitui todo o bloco de definição dos servidores originais
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
            
-           # Substitui a chave publica pelo IP (conforme seu setup)
-           $content = $content -replace 'pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+           # Substitui a chave publica
+           $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
            
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           Write-Host "Configuracao de servidor aplicada com sucesso!"
+           
+           # Debug: Mostra se a troca aconteceu mesmo
+           Write-Host "--- VERIFICACAO ---"
+           Select-String -InputObject $content -Pattern "20.195.216.23"
         } else {
-           Write-Error "Arquivo de configuracao nao encontrado!"
+           Write-Error "Arquivo config.rs nao encontrado!"
            exit 1
         }
 
-    # --- CORREÇÃO DE DEPENDÊNCIAS (Obrigatório) ---
+    # --- CORREÇÃO DE DEPENDÊNCIAS ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
       run: |
-        # Ajusta versao do extended_text para funcionar com Flutter 3.22
         $File = "pubspec.yaml"
         $Content = Get-Content $File -Raw
         $NewContent = $Content -replace 'extended_text:.*', 'extended_text: ^13.0.0'
@@ -130,24 +133,22 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- EMPACOTAMENTO (Sem renomear o executavel) ---
+    # --- EMPACOTAMENTO ---
     - name: Prepare Output
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "RustDesk_Custom_Server"
         
-        # Encontra o executavel original
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
-            # Pega o arquivo mais recente (o que acabamos de compilar)
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
             
             Write-Host "Copiando pasta completa: $SourceFolder"
             Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Custom_Server" -Recurse -Force
             
-            Write-Host "Pacote pronto em RustDesk_Custom_Server (Mantendo nome original rustdesk.exe)"
+            Write-Host "Pacote pronto em RustDesk_Custom_Server"
         } else {
             Write-Error "ERRO: Executavel nao encontrado."
             exit 1
