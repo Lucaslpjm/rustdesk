@@ -1,4 +1,4 @@
-name: Build Saurus Remote (Turbo Cache)
+name: Build Saurus Server-Only
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES ---
+    # --- CACHES (Para ser rapido) ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -42,13 +42,14 @@ jobs:
         restore-keys: |
           flutter-pub-${{ runner.os }}-
 
+    # --- SETUP FERRAMENTAS ---
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.2'
+        flutter-version: '3.22.2' # Versao estavel obrigatoria
         channel: 'stable'
 
     - name: Install LLVM
@@ -57,11 +58,35 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- SETUP AMBIENTE ---
-    - name: Force Downgrade extended_text
+    # --- A ÚNICA CUSTOMIZAÇÃO (SERVIDOR) ---
+    - name: Hardcode Server IP
+      shell: powershell
+      run: |
+        Write-Host "Injetando IP 20.195.216.23 no codigo fonte..."
+        
+        $ConfigFile = "libs/hbb_common/src/config.rs"
+        if (Test-Path $ConfigFile) {
+           $c = Get-Content $ConfigFile
+           
+           # 1. Define Servidores de ID e Relay
+           $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
+           
+           # 2. Define a Key (usando o IP conforme seu setup)
+           $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
+           
+           $c | Set-Content $ConfigFile
+           Write-Host "Sucesso: Servidor configurado no codigo."
+        } else {
+           Write-Error "Erro: Arquivo config.rs nao encontrado."
+           exit 1
+        }
+
+    # --- PREPARAÇÃO DO AMBIENTE (Correções Tecnicas) ---
+    - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
       run: |
+        # Corrige incompatibilidade de versoes do Flutter antigo
         $File = "pubspec.yaml"
         $Content = Get-Content $File -Raw
         $NewContent = $Content -replace 'extended_text:.*', 'extended_text: ^13.0.0'
@@ -83,10 +108,10 @@ jobs:
         $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
         flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
 
-    - name: Install Dependencies & Fix Paths
+    - name: Install C++ Dependencies (VCPKG)
       shell: powershell
       run: |
-        Write-Host "Iniciando instalacao (Verificando Cache)..."
+        Write-Host "Verificando dependencias C++..."
         vcpkg install --triplet x64-windows-static
         
         $BaseDir = Get-Location
@@ -98,83 +123,39 @@ jobs:
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
         echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
-    # --- CUSTOMIZAÇÃO ---
-    - name: Apply Customizations (Branding)
-      shell: powershell
-      run: |
-        $UrlIcone = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/icoRust.ico"
-        $UrlLogo  = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
-        
-        try {
-            Invoke-WebRequest -Uri $UrlIcone -OutFile "res/icon.ico" -ErrorAction Stop
-            Invoke-WebRequest -Uri $UrlLogo -OutFile "res/logo.png" -ErrorAction Stop
-            if (Test-Path "flutter/assets/images/logo.png") {
-                Copy-Item "res/logo.png" -Destination "flutter/assets/images/logo.png" -Force
-            }
-        } catch { Write-Warning "Erro baixar logos." }
-
-        $SafraBlue = "0xFF1E2044" 
-        $CommonFile = "flutter/lib/common.dart"
-        if (Test-Path $CommonFile) {
-            $c = Get-Content $CommonFile
-            $c = $c -replace '0xFF2196F3', $SafraBlue
-            $c | Set-Content $CommonFile
-        }
-
-        $ConfigFile = "libs/hbb_common/src/config.rs"
-        if (Test-Path $ConfigFile) {
-           $c = Get-Content $ConfigFile
-           $c = $c -replace 'pub const APP_NAME.*', 'pub const APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("Saurus Remote".to_string()));'
-           $c = $c -replace 'pub const RENDEZVOUS_SERVERS:.*', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
-           $c = $c -replace 'pub const RS_PUB_KEY:.*', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
-           $c | Set-Content $ConfigFile
-        }
-        
-        $WinMain = "windows/runner/main.cpp"
-        if (Test-Path $WinMain) {
-            $w = Get-Content $WinMain
-            $w = $w -replace 'L"RustDesk"', 'L"Saurus Remote"'
-            $w | Set-Content $WinMain
-        }
-
     # --- BUILD ---
-    - name: Build Saurus Client
+    - name: Build RustDesk
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- CORREÇÃO: COPIAR PASTA COMPLETA (COM DLLs) ---
-    - name: Find and Prepare Portable Folder
+    # --- EMPACOTAR TUDO (EXE + DLLs) ---
+    - name: Package Portable Version
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "SAIDA_FINAL"
-        Write-Host "Varrendo diretorio raiz em busca de rustdesk.exe..."
+        New-Item -ItemType Directory -Force -Path "SaurusRemote"
         
-        # Encontra o executavel
+        # Encontra onde o Flutter gerou o executavel e as DLLs
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            Write-Host "EXECUTAVEL ENCONTRADO: $($Best.FullName)"
-            
-            # Pega a pasta onde o executavel esta (que contem as DLLs e pasta data)
             $SourceFolder = $Best.Directory.FullName
-            Write-Host "Copiando TODO o conteudo de: $SourceFolder"
             
-            # Copia TUDO (exe, dlls, pasta data) para a saida
-            Copy-Item -Path "$SourceFolder\*" -Destination "SAIDA_FINAL" -Recurse -Force
+            Write-Host "Empacotando conteudo de: $SourceFolder"
             
-            # Renomeia o executavel na saida
-            Rename-Item -Path "SAIDA_FINAL\rustdesk.exe" -NewName "SaurusRemote.exe"
+            # Copia a pasta inteira (exe, dlls, data) para garantir que funcione
+            Copy-Item -Path "$SourceFolder\*" -Destination "SaurusRemote" -Recurse -Force
             
-            Write-Host "Pasta portatil criada com sucesso!"
+            # Renomeia o executavel
+            Rename-Item -Path "SaurusRemote\rustdesk.exe" -NewName "SaurusRemote.exe"
         } else {
-            Write-Error "ERRO CRITICO: Nenhum rustdesk.exe encontrado em lugar nenhum!"
+            Write-Error "ERRO: Executavel nao encontrado."
             exit 1
         }
 
-    - name: Upload Portable Package
+    - name: Upload Saurus Remote
       uses: actions/upload-artifact@v4
       with:
         name: Saurus-Remote-Portable
-        path: SAIDA_FINAL
+        path: SaurusRemote
