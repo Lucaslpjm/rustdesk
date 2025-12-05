@@ -1,4 +1,4 @@
-name: Build Saurus Installer (Single File)
+name: Build Saurus Installer (Final Fix)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES ---
+    # --- CACHES (Mantidos para velocidade) ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -55,16 +55,16 @@ jobs:
     - name: Install LLVM & Inno Setup
       run: |
         choco install llvm -y
-        # Instala o criador de instaladores
+        # Instala o compilador de instaladores
         choco install innosetup -y
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO (IP HARDCODED) ---
+    # --- CONFIGURAÇÃO (IP HARDCODED - PORTA 80 + 443) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor: 20.195.216.23:443..."
+        Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
         $SeuIP = "20.195.216.23:443" 
@@ -77,7 +77,7 @@ jobs:
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
         } else { exit 1 }
 
-    # --- CORREÇÃO E COMPILAÇÃO ---
+    # --- COMPILAÇÃO ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -120,33 +120,46 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- CRIAÇÃO DO INSTALADOR ÚNICO ---
+    # --- CRIAÇÃO DO INSTALADOR (CORRIGIDO) ---
     - name: Build Installer (Inno Setup)
       shell: powershell
       run: |
         Write-Host "Preparando arquivos para o Instalador..."
         
-        # 1. Cria a pasta padrao que o script do Inno Setup espera
+        # 1. Cria a pasta onde o .iss espera encontrar o executavel
         New-Item -ItemType Directory -Force -Path "target\release"
         
-        # 2. Encontra onde o Flutter gerou os arquivos
+        # 2. Copia os arquivos compilados para lá
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
         $SourceFolder = $Files.Directory.FullName
-        
-        # 3. Copia TUDO (exe, dlls, data) para 'target/release'
         Copy-Item -Path "$SourceFolder\*" -Destination "target\release" -Recurse -Force
         
-        # 4. Roda o Inno Setup para gerar o .exe unico
-        Write-Host "Gerando Instalador..."
-        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" resources\rustdesk.iss
+        # 3. Executa o Inno Setup
+        # CORREÇÃO: O caminho correto é 'res\rustdesk.iss' e não 'resources'
+        if (Test-Path "res\rustdesk.iss") {
+            Write-Host "Arquivo ISS encontrado. Iniciando compilacao do instalador..."
+            & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" res\rustdesk.iss
+        } else {
+            Write-Error "ERRO: Arquivo res\rustdesk.iss nao encontrado!"
+            exit 1
+        }
         
-        # 5. Renomeia o resultado
-        if (Test-Path "target\release\rustdesk-1.2.4-x86_64.exe") {
-            Rename-Item "target\release\rustdesk-1.2.4-x86_64.exe" "Saurus_Instalador.exe"
+        # 4. Renomeia o instalador gerado
+        # O Inno Setup joga o output na raiz ou em target/release dependendo da config
+        $Installer = Get-ChildItem -Path . -Recurse -Filter "rustdesk-*-x86_64.exe" | Select-Object -First 1
+        
+        if ($Installer) {
+            Rename-Item $Installer.FullName "Saurus_Instalador.exe"
+            # Move para uma pasta limpa para upload
+            New-Item -ItemType Directory -Force -Path "Output_Installer"
+            Move-Item "Saurus_Instalador.exe" "Output_Installer\"
+        } else {
+            Write-Error "ERRO: O arquivo .exe do instalador nao foi gerado."
+            exit 1
         }
 
     - name: Upload Single Installer
       uses: actions/upload-artifact@v4
       with:
         name: Saurus-Setup
-        path: target/release/Saurus_Instalador.exe
+        path: Output_Installer/Saurus_Instalador.exe
