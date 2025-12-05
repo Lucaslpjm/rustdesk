@@ -109,7 +109,7 @@ jobs:
         $ConfigFile = "libs/hbb_common/src/config.rs"
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
-           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23:443"];'
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
         }
