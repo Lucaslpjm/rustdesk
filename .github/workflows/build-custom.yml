@@ -1,4 +1,4 @@
-name: Build Saurus Safra Edition
+name: Build Saurus Safra (Visual Fix)
 
 on:
   workflow_dispatch:
@@ -58,48 +58,55 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- 1. CUSTOMIZAÇÃO VISUAL (SAFRA: AZUL & DOURADO) ---
-    - name: Apply Safra Theme (Colors)
+    # --- CUSTOMIZAÇÃO VISUAL (MODO AGRESSIVO) ---
+    - name: Apply Safra Theme
       shell: powershell
       run: |
-        Write-Host "Aplicando identidade visual Banco Safra (Blue & Gold)..."
-        $ThemeFile = "flutter/lib/common.dart"
+        Write-Host "Aplicando tema Saurus-Safra..."
         
-        if (Test-Path $ThemeFile) {
-           $content = Get-Content $ThemeFile -Raw
-           
-           # --- PALETA SAFRA ---
-           $SafraNavy = "0xFF132047"  # Azul Escuro Profundo (Para Botoes/Topo)
-           $SafraGold = "0xFFD4AF37"  # Dourado Metalico (Para Detalhes/Selecao)
-           $CleanWhite = "0xFFFFFFFF" # Branco Puro (Para limpar o cinza)
-           
-           # 1. Substitui o AZUL PADRAO pelo AZUL SAFRA
-           # (Afeta botao conectar, abas ativas, titulos)
-           $content = $content -replace '0xFF2196F3', $SafraNavy
-           
-           # 2. Substitui o AZUL CLARO (Hover/Selection) pelo DOURADO SAFRA
-           # O RustDesk usa muito o azul '1890ff' ou variações para focos
-           $content = $content -replace '0xFF1890ff', $SafraGold
-           $content = $content -replace '0xFF409EFF', $SafraGold
-           
-           # 3. Tenta limpar o CINZA da Lateral para BRANCO (Mais elegante)
-           # O cinza padrao costuma ser F5F5F5 ou FAFAFA
-           $content = $content -replace '0xFFF5F5F5', $CleanWhite
-           $content = $content -replace '0xFFFAFAFA', $CleanWhite
-           
-           Set-Content -Path $ThemeFile -Value $content -Encoding UTF8
-           Write-Host "Tema Safra aplicado: Azul $SafraNavy e Dourado $SafraGold"
-        } else {
-           Write-Warning "Arquivo de tema nao encontrado."
+        # Cores (Azul Marinho e Dourado)
+        $SafraNavy = "0xFF132047"
+        $SafraGold = "0xFFD4AF37"
+        
+        # Arquivos para tentar a troca
+        $FilesToPatch = @("flutter/lib/common.dart", "flutter/lib/theme.dart", "flutter/lib/main.dart")
+        
+        foreach ($File in $FilesToPatch) {
+            if (Test-Path $File) {
+                Write-Host "Processando: $File"
+                $content = Get-Content $File -Raw
+                
+                # 1. Troca o Azul Primario (Case Insensitive)
+                # Procura por 0xFF2196F3 ou Colors.blue e troca pelo Navy
+                if ($content -match "0xFF2196F3") { Write-Host "  > Encontrou Hex Azul. Trocando..." }
+                $content = $content -replace '0x[Ff][Ff]2196[Ff]3', $SafraNavy
+                
+                if ($content -match "Colors\.blue") { Write-Host "  > Encontrou Colors.blue. Trocando..." }
+                $content = $content -replace 'Colors\.blue', "Color($SafraNavy)"
+                
+                # 2. Troca o Azul de Destaque (Lighter Blue) pelo Dourado
+                $content = $content -replace '0x[Ff][Ff]1890[Ff][Ff]', $SafraGold
+                
+                Set-Content -Path $File -Value $content -Encoding UTF8
+            }
         }
+        
+        # --- BONUS: DOWNLOAD DO LOGO ---
+        # Tenta baixar o logo novamente para garantir a identidade visual completa
+        try {
+            $UrlLogo = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
+            $Dest = "flutter/assets/images/logo.png"
+            if (Test-Path $Dest) {
+                Invoke-WebRequest -Uri $UrlLogo -OutFile $Dest -ErrorAction Stop
+                Write-Host "Logo atualizado no Flutter!"
+            }
+        } catch { Write-Warning "Nao foi possivel baixar o logo." }
 
-    # --- 2. CONFIGURAÇÃO DO SERVIDOR ---
+    # --- CONFIGURAÇÃO DO SERVIDOR ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23"];'
@@ -107,7 +114,7 @@ jobs:
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
         }
 
-    # --- 3. DEPENDÊNCIAS ---
+    # --- DEPENDÊNCIAS E COMPILAÇÃO ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -136,13 +143,10 @@ jobs:
     - name: Install C++ Libs (VCPKG)
       shell: powershell
       run: |
-        Write-Host "Verificando cache C++..."
         vcpkg install --triplet x64-windows-static
-        
         $BaseDir = Get-Location
         $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
         $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
-        
         echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
         echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
@@ -157,22 +161,18 @@ jobs:
     - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "Saurus_Safra_Gold"
-        
+        New-Item -ItemType Directory -Force -Path "Saurus_Safra_Edition"
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
-            
-            Write-Host "Empacotando..."
-            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Safra_Gold" -Recurse -Force
-        } else {
-            exit 1
-        }
+            Write-Host "Empacotando de: $SourceFolder"
+            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Safra_Edition" -Recurse -Force
+        } else { exit 1 }
 
-    - name: Upload Safra Gold Edition
+    - name: Upload Safra Edition
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Safra-Gold
-        path: Saurus_Safra_Gold
+        name: Saurus-Safra-Edition
+        path: Saurus_Safra_Edition
