@@ -1,4 +1,4 @@
-name: Build Saurus Safra (Visual Fix)
+name: Build RustDesk (Port 80/443 Fix)
 
 on:
   workflow_dispatch:
@@ -58,76 +58,35 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CUSTOMIZAÇÃO VISUAL (MODO AGRESSIVO) ---
-    - name: Apply Safra Theme
-      shell: powershell
-      run: |
-        Write-Host "Aplicando tema Saurus-Safra..."
-        
-        # Cores (Azul Marinho e Dourado)
-        $SafraNavy = "0xFF132047"
-        $SafraGold = "0xFFD4AF37"
-        
-        # Arquivos para tentar a troca
-        $FilesToPatch = @("flutter/lib/common.dart", "flutter/lib/theme.dart", "flutter/lib/main.dart")
-        
-        foreach ($File in $FilesToPatch) {
-            if (Test-Path $File) {
-                Write-Host "Processando: $File"
-                $content = Get-Content $File -Raw
-                
-                # 1. Troca o Azul Primario (Case Insensitive)
-                # Procura por 0xFF2196F3 ou Colors.blue e troca pelo Navy
-                if ($content -match "0xFF2196F3") { Write-Host "  > Encontrou Hex Azul. Trocando..." }
-                $content = $content -replace '0x[Ff][Ff]2196[Ff]3', $SafraNavy
-                
-                if ($content -match "Colors\.blue") { Write-Host "  > Encontrou Colors.blue. Trocando..." }
-                $content = $content -replace 'Colors\.blue', "Color($SafraNavy)"
-                
-                # 2. Troca o Azul de Destaque (Lighter Blue) pelo Dourado
-                $content = $content -replace '0x[Ff][Ff]1890[Ff][Ff]', $SafraGold
-                
-                Set-Content -Path $File -Value $content -Encoding UTF8
-            }
-        }
-        
-        # --- BONUS: DOWNLOAD DO LOGO ---
-        # Tenta baixar o logo novamente para garantir a identidade visual completa
-        try {
-            $UrlLogo = "https://blob.saurus.net.br/drive/clientes/cliente_testeslucaspt1/logoRust.png"
-            $Dest = "flutter/assets/images/logo.png"
-            if (Test-Path $Dest) {
-                Invoke-WebRequest -Uri $UrlLogo -OutFile $Dest -ErrorAction Stop
-                Write-Host "Logo atualizado no Flutter!"
-            }
-        } catch { Write-Warning "Nao foi possivel baixar o logo." }
-
- # --- CONFIGURAÇÃO DO SERVIDOR (PORTA 443) ---
+    # --- CONFIGURAÇÃO DO SERVIDOR (CORREÇÃO DE PORTAS) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Configurando servidor para 20.195.216.23:443..."
+        Write-Host "Configurando servidor: ID na porta 80, Key sem porta..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
            
-           # 1. RENDEZVOUS: AQUI VAI A PORTA (:443)
-           # Isso diz para o programa: "Conecte neste IP, usando a porta 443"
-           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23:443"];'
+           # 1. RENDEZVOUS (ID SERVER) -> PORTA 80
+           # O cliente conecta aqui via HTTP (Porta 80) para passar pelo firewall
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', 'pub const RENDEZVOUS_SERVERS: &''static [&''static str] = &["20.195.216.23:80"];'
            
-           # 2. KEY: AQUI NÃO VAI A PORTA (Apenas o IP puro)
-           # Isso é a "senha". O servidor espera apenas o IP, sem o :443
+           # 2. KEY -> SEM PORTA (Apenas o IP)
+           # A chave de criptografia é baseada apenas no IP
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', 'pub const RS_PUB_KEY: &''static str = "20.195.216.23";'
            
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           Write-Host "Configuracao aplicada: Porta 443 definida!"
+           
+           # Validacao no log
+           Write-Host "--- VALIDACAO ---"
+           Get-Content $ConfigFile | Select-String "20.195.216.23"
         } else {
            Write-Error "Arquivo config.rs nao encontrado!"
            exit 1
         }
 
-    # --- DEPENDÊNCIAS E COMPILAÇÃO ---
+    # --- CORREÇÃO DE DEPENDÊNCIAS ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -156,15 +115,19 @@ jobs:
     - name: Install C++ Libs (VCPKG)
       shell: powershell
       run: |
+        Write-Host "Verificando dependencias C++..."
         vcpkg install --triplet x64-windows-static
+        
         $BaseDir = Get-Location
         $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
         $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
+        
         echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
         echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
         echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
+    # --- BUILD ---
     - name: Build RustDesk
       run: python build.py --flutter
       env:
@@ -174,18 +137,24 @@ jobs:
     - name: Prepare Output
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "Saurus_Safra_Edition"
+        New-Item -ItemType Directory -Force -Path "RustDesk_Custom_Client"
+        
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch "vcpkg" -and $_.FullName -notmatch "node_modules" }
         
         if ($Files) {
             $Best = $Files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             $SourceFolder = $Best.Directory.FullName
-            Write-Host "Empacotando de: $SourceFolder"
-            Copy-Item -Path "$SourceFolder\*" -Destination "Saurus_Safra_Edition" -Recurse -Force
-        } else { exit 1 }
+            
+            Write-Host "Empacotando pasta: $SourceFolder"
+            Copy-Item -Path "$SourceFolder\*" -Destination "RustDesk_Custom_Client" -Recurse -Force
+            
+            Write-Host "Sucesso! Executavel mantido como rustdesk.exe para compatibilidade."
+        } else {
+            exit 1
+        }
 
-    - name: Upload Safra Edition
+    - name: Upload Custom Client
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Safra-Edition
-        path: Saurus_Safra_Edition
+        name: RustDesk-Custom-Client
+        path: RustDesk_Custom_Client
