@@ -1,4 +1,4 @@
-name: Build RustDesk Final (Port 443 Fix)
+name: Build Saurus Combo (Installer + Portable)
 
 on:
   workflow_dispatch:
@@ -59,29 +59,22 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR (CORRIGIDA PARA 443) ---
+    # --- CONFIGURAÇÃO (Mantendo o que deu certo) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
         Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # --- SEUS DADOS VALIDADOS ---
-        # ID Server na porta 443 (Conforme seu teste manual)
+        # ID Server na 443 (Para passar firewall), Key com =
         $SeuIP = "20.195.216.23:443" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
-           
-           # Injeta o IP do ID Server (443)
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
-           
-           # Injeta a Key
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
-           
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           Write-Host "Configuracao aplicada: ID Server -> 443"
         } else { exit 1 }
 
     # --- PREPARAÇÃO ---
@@ -128,22 +121,41 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- EMPACOTAMENTO ---
-    - name: Create Clean Installer
+    # --- GERAR INSTALADOR E PORTÁTIL ---
+    - name: Create Installer and Portable
       shell: powershell
       run: |
-        Write-Host "Criando instalador..."
+        Write-Host "Organizando arquivos..."
         
+        # 1. Prepara area limpa (Stage)
         $StageDir = "Staging_Area"
         New-Item -ItemType Directory -Force -Path $StageDir
         
+        # 2. Encontra os arquivos gerados
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
         $SourceFolder = $Files.Directory.FullName
         
+        # 3. Copia apenas o necessario (Exe + DLLs + Data)
         Copy-Item "$SourceFolder\rustdesk.exe" $StageDir
         Copy-Item "$SourceFolder\*.dll" $StageDir
         if (Test-Path "$SourceFolder\data") { Copy-Item "$SourceFolder\data" $StageDir -Recurse }
         
+        # --- PARTE A: VERSÃO PORTÁTIL ---
+        Write-Host "Criando versao Portatil..."
+        $PortableDir = "Saurus_Portable"
+        New-Item -ItemType Directory -Force -Path $PortableDir
+        
+        # Copia do Stage para o Portatil
+        Copy-Item "$StageDir\*" $PortableDir -Recurse
+        
+        # Na versao portatil, podemos renomear o executavel para ficar bonito
+        # Pois o usuario vai clicar direto nele
+        Rename-Item "$PortableDir\rustdesk.exe" "SaurusRemote.exe"
+        
+        # --- PARTE B: VERSÃO INSTALADOR ---
+        Write-Host "Criando Instalador..."
+        
+        # Script Inno Setup (Aponta para Staging_Area com nome original rustdesk.exe)
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -169,11 +181,20 @@ jobs:
         "@
         
         Set-Content -Path "setup.iss" -Value $IssContent -Encoding ASCII
-        
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 
-    - name: Upload Installer
+    # --- UPLOADS ---
+    
+    # 1. Sobe o Instalador Unico
+    - name: Upload Installer (Single File)
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Setup-Final
+        name: Saurus-Instalador
         path: Saurus_Instalador.exe
+
+    # 2. Sobe a Pasta Portatil (Zip)
+    - name: Upload Portable (Folder)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saurus-Portable
+        path: Saurus_Portable
