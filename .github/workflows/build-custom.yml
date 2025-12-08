@@ -1,4 +1,4 @@
-name: Build Saurus Combo (Installer + Portable)
+name: Build Saurus Installer (VC++ & Clean)
 
 on:
   workflow_dispatch:
@@ -59,14 +59,13 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO (Mantendo o que deu certo) ---
+    # --- CONFIGURAÇÃO DO SERVIDOR ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
         Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
-        # ID Server na 443 (Para passar firewall), Key com =
         $SeuIP = "20.195.216.23:443" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
@@ -121,41 +120,28 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- GERAR INSTALADOR E PORTÁTIL ---
-    - name: Create Installer and Portable
+    # --- EMPACOTAMENTO PRO (VC++ + LIMPEZA) ---
+    - name: Create Power Installer
       shell: powershell
       run: |
-        Write-Host "Organizando arquivos..."
+        Write-Host "Criando instalador avançado..."
         
-        # 1. Prepara area limpa (Stage)
         $StageDir = "Staging_Area"
         New-Item -ItemType Directory -Force -Path $StageDir
         
-        # 2. Encontra os arquivos gerados
+        # 1. Copia arquivos do RustDesk
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
         $SourceFolder = $Files.Directory.FullName
-        
-        # 3. Copia apenas o necessario (Exe + DLLs + Data)
         Copy-Item "$SourceFolder\rustdesk.exe" $StageDir
         Copy-Item "$SourceFolder\*.dll" $StageDir
         if (Test-Path "$SourceFolder\data") { Copy-Item "$SourceFolder\data" $StageDir -Recurse }
         
-        # --- PARTE A: VERSÃO PORTÁTIL ---
-        Write-Host "Criando versao Portatil..."
-        $PortableDir = "Saurus_Portable"
-        New-Item -ItemType Directory -Force -Path $PortableDir
+        # 2. Baixa o Visual C++ Redistributable
+        Write-Host "Baixando Visual C++..."
+        $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
         
-        # Copia do Stage para o Portatil
-        Copy-Item "$StageDir\*" $PortableDir -Recurse
-        
-        # Na versao portatil, podemos renomear o executavel para ficar bonito
-        # Pois o usuario vai clicar direto nele
-        Rename-Item "$PortableDir\rustdesk.exe" "SaurusRemote.exe"
-        
-        # --- PARTE B: VERSÃO INSTALADOR ---
-        Write-Host "Criando Instalador..."
-        
-        # Script Inno Setup (Aponta para Staging_Area com nome original rustdesk.exe)
+        # 3. Gera script Inno Setup com logica de Limpeza e Install
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -167,10 +153,13 @@ jobs:
         SolidCompression=yes
         OutputDir=.
         OutputBaseFilename=Saurus_Instalador
-        PrivilegesRequired=lowest
+        PrivilegesRequired=admin
 
         [Files]
+        ; Arquivos do programa
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        ; O instalador do VC++ fica na pasta temporaria para rodar e ser deletado
+        Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
         [Icons]
         Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
@@ -178,23 +167,38 @@ jobs:
 
         [Tasks]
         Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
+
+        [Run]
+        ; Instala o Visual C++ silenciosamente antes de acabar
+        Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Instalando componentes do sistema (Visual C++)..."; Flags: waituntilterminated
+        ; Roda o RustDesk no final
+        Filename: "{app}\rustdesk.exe"; Description: "Abrir Saurus Remote"; Flags: nowait postinstall skipifsilent
+
+        [Code]
+        // Funcao para limpar o %APPDATA%\RustDesk antes de instalar
+        procedure CurStepChanged(CurStep: TSetupStep);
+        var
+          AppDataPath: String;
+        begin
+          if CurStep = ssInstall then
+          begin
+            AppDataPath := ExpandConstant('{userappdata}\RustDesk');
+            if DirExists(AppDataPath) then
+            begin
+              Log('Limpando configuracoes antigas em: ' + AppDataPath);
+              DelTree(AppDataPath, True, True, True);
+            end;
+          end;
+        end;
         "@
         
         Set-Content -Path "setup.iss" -Value $IssContent -Encoding ASCII
+        
+        # Compila
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 
-    # --- UPLOADS ---
-    
-    # 1. Sobe o Instalador Unico
-    - name: Upload Installer (Single File)
+    - name: Upload Power Installer
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Instalador
+        name: Saurus-Instalador-Completo
         path: Saurus_Instalador.exe
-
-    # 2. Sobe a Pasta Portatil (Zip)
-    - name: Upload Portable (Folder)
-      uses: actions/upload-artifact@v4
-      with:
-        name: Saurus-Portable
-        path: Saurus_Portable
