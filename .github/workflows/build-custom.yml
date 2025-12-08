@@ -1,4 +1,4 @@
-name: Build Saurus Installer (Clean & Light)
+name: Build RustDesk Final (Installer Fixed)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       with:
         submodules: recursive
 
-    # --- CACHES ---
+    # --- CACHES (Aceleração) ---
     - name: Cache Rust Dependencies
       uses: swatinem/rust-cache@v2
       with:
@@ -42,7 +42,7 @@ jobs:
         restore-keys: |
           flutter-pub-${{ runner.os }}-
 
-    # --- SETUP ---
+    # --- SETUP BÁSICO ---
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
@@ -59,24 +59,34 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO ---
+    # --- CONFIGURAÇÃO DO SERVIDOR (IP + KEY) ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
         Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         
+        # SEUS DADOS (ID na 80, Relay na 443, Key com =)
         $SeuIP = "20.195.216.23:80" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
+           
+           # Injeta o IP
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
+           
+           # Injeta a Key
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
+           
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
+           
+           # Verificação visual no log
+           Write-Host "--- CONFIRMACAO DE CONFIGURACAO ---"
+           Get-Content $ConfigFile | Select-String "20.195.216.23"
         } else { exit 1 }
 
-    # --- COMPILAÇÃO ---
+    # --- PREPARAÇÃO ---
     - name: Fix Flutter Dependencies
       working-directory: ./flutter
       shell: powershell
@@ -114,41 +124,37 @@ jobs:
         echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
         echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
+    # --- BUILD ---
     - name: Build RustDesk
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- CRIAÇÃO DO INSTALADOR (LIMPEZA DE ARQUIVOS) ---
+    # --- EMPACOTAMENTO OTIMIZADO (NOME PADRÃO) ---
     - name: Create Clean Installer
       shell: powershell
       run: |
-        Write-Host "Preparando arquivos LIMPOS para o Instalador..."
+        Write-Host "Criando instalador padrao..."
         
-        # Pasta temporaria limpa
         $StageDir = "Staging_Area"
         New-Item -ItemType Directory -Force -Path $StageDir
         
-        # 1. Encontra a origem
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
         $SourceFolder = $Files.Directory.FullName
         
-        Write-Host "Copiando apenas arquivos essenciais de: $SourceFolder"
-        
-        # 2. Copia APENAS o essencial (Ignora .pdb, .iobj, etc)
+        # Copia apenas o necessario para manter tamanho pequeno
         Copy-Item "$SourceFolder\rustdesk.exe" $StageDir
         Copy-Item "$SourceFolder\*.dll" $StageDir
-        if (Test-Path "$SourceFolder\data") {
-            Copy-Item "$SourceFolder\data" $StageDir -Recurse
-        }
+        if (Test-Path "$SourceFolder\data") { Copy-Item "$SourceFolder\data" $StageDir -Recurse }
         
-        # 3. Cria o arquivo .ISS configurado para a pasta Staging_Area
+        # --- CONFIGURAÇÃO DO INSTALADOR (INNO SETUP) ---
+        # Definimos AppName=RustDesk para manter compatibilidade total com o sistema
         $IssContent = @"
         [Setup]
-        AppName=Saurus Remote
+        AppName=RustDesk
         AppVersion=1.2.4
-        DefaultDirName={autopf}\Saurus Remote
-        DefaultGroupName=Saurus Remote
+        DefaultDirName={autopf}\RustDesk
+        DefaultGroupName=RustDesk
         UninstallDisplayIcon={app}\rustdesk.exe
         Compression=lzma2
         SolidCompression=yes
@@ -157,25 +163,23 @@ jobs:
         PrivilegesRequired=lowest
 
         [Files]
-        ; Pega os arquivos da pasta limpa
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
         [Icons]
-        Name: "{group}\Saurus Remote"; Filename: "{app}\rustdesk.exe"
-        Name: "{autodesktop}\Saurus Remote"; Filename: "{app}\rustdesk.exe"; Tasks: desktopicon
+        Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
+        Name: "{autodesktop}\RustDesk"; Filename: "{app}\rustdesk.exe"; Tasks: desktopicon
 
         [Tasks]
         Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
         "@
         
-        Set-Content -Path "saurus_setup.iss" -Value $IssContent -Encoding ASCII
+        Set-Content -Path "setup.iss" -Value $IssContent -Encoding ASCII
         
-        # 4. Compila
-        Write-Host "Compilando Instalador..."
-        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" saurus_setup.iss
+        # Compila
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 
     - name: Upload Installer
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Setup-Lite
+        name: Saurus-Setup-Final
         path: Saurus_Instalador.exe
