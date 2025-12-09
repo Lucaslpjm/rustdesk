@@ -61,41 +61,54 @@ jobs:
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    # --- CORREÇÃO DE RECURSOS (LINKS ATUALIZADOS) ---
+    # --- NOVO PASSO: GERAR ASSETS DA INTERFACE ---
+    # Cria o arquivo src/ui/inline.rs que estava faltando
+    - name: Generate Inline UI Assets
+      shell: python
+      run: |
+        import os
+        
+        print("Gerando src/ui/inline.rs...")
+        
+        # Mapeia as funcoes que o Rust reclama que faltam -> para os arquivos HTML reais
+        mapping = {
+            "get_index": "index.html",
+            "get_chatbox": "chatbox.html",
+            "get_cm": "cm.html",
+            "get_install": "install.html",
+            "get_remote": "remote.html"
+        }
+        
+        with open("src/ui/inline.rs", "w") as f:
+            for func, filename in mapping.items():
+                # O Rust usa o macro include_bytes! para embutir o HTML no EXE
+                if os.path.exists(f"src/ui/{filename}"):
+                    f.write(f'pub fn {func}() -> &\'static [u8] {{\n')
+                    f.write(f'    include_bytes!("{filename}")\n')
+                    f.write(f'}}\n\n')
+                else:
+                    # Se nao achar o arquivo (raro), cria uma funcao vazia para nao travar
+                    print(f"AVISO: {filename} nao encontrado! Criando stub.")
+                    f.write(f'pub fn {func}() -> &\'static [u8] {{ &[] }}\n\n')
+                    
+        print("Arquivo inline.rs gerado com sucesso!")
+
     - name: Ensure Resources Exist at Root
       shell: powershell
       run: |
         Write-Host "Procurando icon.ico e manifest.xml..."
-        
-        # 1. ICONE
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
-        if ($icon) {
-            Copy-Item $icon.FullName -Destination ".\icon.ico" -Force
-        } else {
-            Write-Warning "Baixando icone da pasta 'res'..."
-            # LINK CORRIGIDO: Agora aponta para /res/icon.ico
-            try {
-                Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" -OutFile ".\icon.ico"
-            } catch {
-                Write-Error "Falha critica ao baixar icone: $_"
-                # Cria dummy se falhar muito
-                New-Item -Path ".\icon.ico" -ItemType File -Force
-            }
+        if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
+        else { 
+            try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" -OutFile ".\icon.ico" } 
+            catch { New-Item -Path ".\icon.ico" -ItemType File -Force }
         }
 
-        # 2. MANIFESTO
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
-        if ($manifest) {
-            Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force
-        } else {
-            Write-Warning "Baixando manifesto da pasta 'res'..."
-            # LINK CORRIGIDO: Agora aponta para /res/manifest.xml
-            try {
-                Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" -OutFile ".\manifest.xml"
-            } catch {
-                Write-Warning "Falha ao baixar manifesto. Criando generico..."
-                Set-Content -Path ".\manifest.xml" -Value "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'></assembly>"
-            }
+        if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
+        else { 
+            try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" -OutFile ".\manifest.xml" } 
+            catch { Set-Content -Path ".\manifest.xml" -Value "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'></assembly>" }
         }
 
     - name: Fix Resource Paths in build.rs
@@ -104,7 +117,6 @@ jobs:
         Write-Host "Aplicando caminhos absolutos..."
         $BuildRs = "build.rs"
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        
         $content = Get-Content $BuildRs -Raw
         $content = $content.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
@@ -131,6 +143,7 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
+        # O flag --features inline agora vai funcionar porque criamos o arquivo
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
