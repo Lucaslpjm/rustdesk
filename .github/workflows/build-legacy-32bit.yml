@@ -53,19 +53,37 @@ jobs:
            Write-Host "Configurado com sucesso!"
         }
 
-    # --- CORREÇÃO DO ERRO DE LOCK (NOVA ETAPA) ---
+    # --- CORREÇÃO DE LOGICA (LOCKS) ---
     - name: Fix Legacy Code Logic (Locks)
       shell: powershell
       run: |
         Write-Host "Corrigindo bug de Lock no codigo antigo..."
         $ConfigFile = "libs\hbb_common\src\config.rs"
-        
-        # O erro reclama que 'let _ =' solta a trava. Trocamos por 'let _lock ='
         $content = Get-Content $ConfigFile -Raw
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
-        
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-        Write-Host "Codigo corrigido!"
+
+    # --- CORREÇÃO DE RECURSOS (ICONES/MANIFESTO) - NOVO ---
+    # O RC.exe nao acha os arquivos se nao dermos o caminho completo
+    - name: Fix Resource Paths in build.rs
+      shell: powershell
+      run: |
+        Write-Host "Corrigindo caminhos de Icone e Manifesto..."
+        $BuildRs = "build.rs"
+        
+        # Pega o caminho absoluto atual (Ex: D:\a\rustdesk\rustdesk) e dobra as barras para o Rust (\\)
+        $AbsPath = (Get-Location).Path.Replace("\", "\\")
+        
+        $content = Get-Content $BuildRs -Raw
+        
+        # Substitui "icon.ico" por "D:\\...\\icon.ico"
+        $content = $content.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
+        
+        # Substitui "manifest.xml" por "D:\\...\\manifest.xml"
+        $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
+        
+        Set-Content -Path $BuildRs -Value $content -Encoding UTF8
+        Write-Host "Caminhos absolutos aplicados!"
 
     - name: Install Dependencies (VCPKG x86)
       run: |
