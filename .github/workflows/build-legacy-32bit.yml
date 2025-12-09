@@ -70,13 +70,15 @@ jobs:
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # 6. Baixa a DLL do Sciter (Motor Gráfico Leve)
+    # 6. Baixa a DLL do Sciter (Link Corrigido)
     - name: Download Sciter DLL
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
-        # Baixa a versao 32-bits do Sciter
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.32/sciter.dll" -OutFile "target\release\sciter.dll"
+        # CORREÇÃO: Link atualizado para a nova estrutura do repositorio oficial
+        $SciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin/windows/x32/sciter.dll"
+        Write-Host "Baixando DLL do Sciter de: $SciterUrl"
+        Invoke-WebRequest -Uri $SciterUrl -OutFile "target\release\sciter.dll"
 
     # 7. Compilação (Cargo puro, sem Flutter)
     - name: Build Legacy
