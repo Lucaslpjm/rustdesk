@@ -5,15 +5,14 @@ on:
 
 jobs:
   build-legacy:
-    runs-on: windows-2019 # Windows 2019 é melhor para compatibilidade legada
+    runs-on: windows-2019 # Windows 2019 garante melhor compatibilidade com ferramentas antigas
     
     env:
-      # VCPKG para 32-bits Estático
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
       RUSTDESK_API_SERVER: ""
 
     steps:
-    # 1. Baixa o código FONTE da versão 1.1.9 (A última versão Sciter estável)
+    # 1. Baixa o código FONTE da versão 1.1.9 (Legacy)
     - name: Checkout Legacy Code (1.1.9)
       uses: actions/checkout@v4
       with:
@@ -21,7 +20,7 @@ jobs:
         ref: 1.1.9
         submodules: recursive
 
-    # 2. Configura Cache (Essencial)
+    # 2. Cache para não demorar
     - name: Cache VCPKG
       uses: actions/cache@v4
       with:
@@ -38,7 +37,7 @@ jobs:
     - name: Install LLVM
       run: choco install llvm -y
 
-    # 4. Configuração do Servidor (Igual fizemos no moderno)
+    # 4. Configuração do Servidor (Hardcoded)
     - name: Inject Server Configuration
       shell: powershell
       run: |
@@ -51,7 +50,6 @@ jobs:
         
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
-           # A sintaxe do 1.1.9 é a mesma, podemos substituir
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
@@ -61,33 +59,33 @@ jobs:
     # 5. Instala Dependências C++ (Versão 32-bits)
     - name: Install Dependencies (VCPKG x86)
       run: |
-        # Clona o VCPKG se não existir no cache
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        # Instala as libs estáticas para 32 bits
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # 6. Baixa a DLL do Sciter (Link Corrigido)
+    # 6. Baixa a DLL do Sciter (LINK DA MÁQUINA DO TEMPO)
     - name: Download Sciter DLL
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
-        # CORREÇÃO: Link atualizado para a nova estrutura do repositorio oficial
-        $SciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin/windows/x32/sciter.dll"
-        Write-Host "Baixando DLL do Sciter de: $SciterUrl"
+        
+        # CORREÇÃO CRÍTICA:
+        # Usamos um link para um Commit Hash de 2021 (e6637c3)
+        # Isso garante que baixamos a versão TIScript antiga que existe e funciona.
+        $SciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/e6637c3b9b47630b9e863335b2e652d378036066/bin.win/x32/sciter.dll"
+        
+        Write-Host "Baixando DLL historica de: $SciterUrl"
         Invoke-WebRequest -Uri $SciterUrl -OutFile "target\release\sciter.dll"
 
-    # 7. Compilação (Cargo puro, sem Flutter)
+    # 7. Compilação
     - name: Build Legacy
       run: |
-        # Define variaveis para o compilador achar as libs 32-bits
         $env:VCPKG_ROOT = "C:\vcpkg"
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-        
-        # Compila para arquitetura i686 (32-bit)
+        # Compila para 32-bits
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
@@ -97,10 +95,10 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
         
-        # Pega o executavel gerado
+        # Pega o executavel gerado (Caminho especifico do target 32bits)
         Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
         
-        # Pega a DLL do Sciter (Obrigatoria)
+        # Pega a DLL do Sciter
         Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
         
         Write-Host "Pacote Legacy Criado!"
