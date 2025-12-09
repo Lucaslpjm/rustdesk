@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-legacy:
-    runs-on: windows-2019 # Windows 2019 é melhor para compatibilidade legada
+    runs-on: windows-2019
     
     env:
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
@@ -32,11 +32,10 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # --- CORREÇÃO DO ERRO LEXERROR ---
-    # Instalamos o LLVM 12.0.0 especificamente, que é compativel com o bindgen 0.59
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
+    # --- INJEÇÃO DO SERVIDOR ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
@@ -53,6 +52,20 @@ jobs:
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
            Write-Host "Configurado com sucesso!"
         }
+
+    # --- CORREÇÃO DO ERRO DE LOCK (NOVA ETAPA) ---
+    - name: Fix Legacy Code Logic (Locks)
+      shell: powershell
+      run: |
+        Write-Host "Corrigindo bug de Lock no codigo antigo..."
+        $ConfigFile = "libs\hbb_common\src\config.rs"
+        
+        # O erro reclama que 'let _ =' solta a trava. Trocamos por 'let _lock ='
+        $content = Get-Content $ConfigFile -Raw
+        $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
+        
+        Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
+        Write-Host "Codigo corrigido!"
 
     - name: Install Dependencies (VCPKG x86)
       run: |
@@ -72,11 +85,8 @@ jobs:
 
     - name: Build Legacy
       run: |
-        # Configura as variaveis para o LLVM 12 e VCPKG
         $env:VCPKG_ROOT = "C:\vcpkg"
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-        
-        # AJUDA O BINDGEN A ACHAR OS HEADERS 32-BITS
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
