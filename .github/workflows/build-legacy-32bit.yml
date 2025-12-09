@@ -35,7 +35,6 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- INJEÇÃO DO SERVIDOR ---
     - name: Inject Server Configuration
       shell: powershell
       run: |
@@ -53,37 +52,57 @@ jobs:
            Write-Host "Configurado com sucesso!"
         }
 
-    # --- CORREÇÃO DE LOGICA (LOCKS) ---
     - name: Fix Legacy Code Logic (Locks)
       shell: powershell
       run: |
-        Write-Host "Corrigindo bug de Lock no codigo antigo..."
+        Write-Host "Corrigindo bug de Lock..."
         $ConfigFile = "libs\hbb_common\src\config.rs"
         $content = Get-Content $ConfigFile -Raw
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    # --- CORREÇÃO DE RECURSOS (ICONES/MANIFESTO) - NOVO ---
-    # O RC.exe nao acha os arquivos se nao dermos o caminho completo
+    # --- CORREÇÃO DE RECURSOS (BUSCA INTELIGENTE) ---
+    - name: Ensure Resources Exist at Root
+      shell: powershell
+      run: |
+        Write-Host "Procurando icon.ico e manifest.xml em qualquer lugar..."
+        
+        # 1. Tenta achar o ICONE
+        $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
+        if ($icon) {
+            Write-Host "Icone encontrado em: $($icon.FullName). Movendo para raiz..."
+            Copy-Item $icon.FullName -Destination ".\icon.ico" -Force
+        } else {
+            Write-Warning "Icone nao encontrado no codigo! Baixando generico..."
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/icon.ico" -OutFile ".\icon.ico"
+        }
+
+        # 2. Tenta achar o MANIFESTO
+        $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
+        if ($manifest) {
+            Write-Host "Manifesto encontrado em: $($manifest.FullName). Movendo para raiz..."
+            Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force
+        } else {
+            Write-Warning "Manifesto nao encontrado! Baixando generico..."
+            # Baixa um manifesto padrao se nao achar
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/manifest.xml" -OutFile ".\manifest.xml"
+        }
+        
+        # Confirmação visual
+        if (Test-Path ".\icon.ico") { Write-Host "OK: icon.ico esta na raiz." } else { Write-Error "FALHA: icon.ico nao esta na raiz." }
+        if (Test-Path ".\manifest.xml") { Write-Host "OK: manifest.xml esta na raiz." } else { Write-Error "FALHA: manifest.xml nao esta na raiz." }
+
     - name: Fix Resource Paths in build.rs
       shell: powershell
       run: |
-        Write-Host "Corrigindo caminhos de Icone e Manifesto..."
+        Write-Host "Aplicando caminhos absolutos..."
         $BuildRs = "build.rs"
-        
-        # Pega o caminho absoluto atual (Ex: D:\a\rustdesk\rustdesk) e dobra as barras para o Rust (\\)
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
         
         $content = Get-Content $BuildRs -Raw
-        
-        # Substitui "icon.ico" por "D:\\...\\icon.ico"
         $content = $content.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
-        
-        # Substitui "manifest.xml" por "D:\\...\\manifest.xml"
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
-        
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
-        Write-Host "Caminhos absolutos aplicados!"
 
     - name: Install Dependencies (VCPKG x86)
       run: |
@@ -98,7 +117,6 @@ jobs:
       shell: cmd
       run: |
         if not exist "target\release" mkdir target\release
-        echo Baixando DLL com CURL...
         curl -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
     - name: Build Legacy
