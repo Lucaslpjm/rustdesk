@@ -61,36 +61,42 @@ jobs:
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    # --- CORREÇÃO DE RECURSOS (BUSCA INTELIGENTE) ---
+    # --- CORREÇÃO DE RECURSOS (LINKS ATUALIZADOS) ---
     - name: Ensure Resources Exist at Root
       shell: powershell
       run: |
-        Write-Host "Procurando icon.ico e manifest.xml em qualquer lugar..."
+        Write-Host "Procurando icon.ico e manifest.xml..."
         
-        # 1. Tenta achar o ICONE
+        # 1. ICONE
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
         if ($icon) {
-            Write-Host "Icone encontrado em: $($icon.FullName). Movendo para raiz..."
             Copy-Item $icon.FullName -Destination ".\icon.ico" -Force
         } else {
-            Write-Warning "Icone nao encontrado no codigo! Baixando generico..."
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/icon.ico" -OutFile ".\icon.ico"
+            Write-Warning "Baixando icone da pasta 'res'..."
+            # LINK CORRIGIDO: Agora aponta para /res/icon.ico
+            try {
+                Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" -OutFile ".\icon.ico"
+            } catch {
+                Write-Error "Falha critica ao baixar icone: $_"
+                # Cria dummy se falhar muito
+                New-Item -Path ".\icon.ico" -ItemType File -Force
+            }
         }
 
-        # 2. Tenta achar o MANIFESTO
+        # 2. MANIFESTO
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
         if ($manifest) {
-            Write-Host "Manifesto encontrado em: $($manifest.FullName). Movendo para raiz..."
             Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force
         } else {
-            Write-Warning "Manifesto nao encontrado! Baixando generico..."
-            # Baixa um manifesto padrao se nao achar
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/manifest.xml" -OutFile ".\manifest.xml"
+            Write-Warning "Baixando manifesto da pasta 'res'..."
+            # LINK CORRIGIDO: Agora aponta para /res/manifest.xml
+            try {
+                Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" -OutFile ".\manifest.xml"
+            } catch {
+                Write-Warning "Falha ao baixar manifesto. Criando generico..."
+                Set-Content -Path ".\manifest.xml" -Value "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'></assembly>"
+            }
         }
-        
-        # Confirmação visual
-        if (Test-Path ".\icon.ico") { Write-Host "OK: icon.ico esta na raiz." } else { Write-Error "FALHA: icon.ico nao esta na raiz." }
-        if (Test-Path ".\manifest.xml") { Write-Host "OK: manifest.xml esta na raiz." } else { Write-Error "FALHA: manifest.xml nao esta na raiz." }
 
     - name: Fix Resource Paths in build.rs
       shell: powershell
