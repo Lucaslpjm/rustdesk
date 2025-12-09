@@ -1,0 +1,110 @@
+name: Build Saurus Legacy (32-bit / Win7)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-legacy:
+    runs-on: windows-2019 # Windows 2019 é melhor para compatibilidade legada
+    
+    env:
+      # VCPKG para 32-bits Estático
+      VCPKG_DEFAULT_TRIPLET: x86-windows-static
+      RUSTDESK_API_SERVER: ""
+
+    steps:
+    # 1. Baixa o código FONTE da versão 1.1.9 (A última versão Sciter estável)
+    - name: Checkout Legacy Code (1.1.9)
+      uses: actions/checkout@v4
+      with:
+        repository: rustdesk/rustdesk
+        ref: 1.1.9
+        submodules: recursive
+
+    # 2. Configura Cache (Essencial)
+    - name: Cache VCPKG
+      uses: actions/cache@v4
+      with:
+        path: C:\vcpkg
+        key: vcpkg-legacy-x86-${{ hashFiles('vcpkg.json') }}
+        restore-keys: vcpkg-legacy-x86-
+
+    # 3. Prepara o Rust para 32-bits
+    - name: Setup Rust (32-bit)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: i686-pc-windows-msvc
+
+    - name: Install LLVM
+      run: choco install llvm -y
+
+    # 4. Configuração do Servidor (Igual fizemos no moderno)
+    - name: Inject Server Configuration
+      shell: powershell
+      run: |
+        Write-Host "Injetando Servidor Saurus (Legacy)..."
+        $ConfigFile = "libs/hbb_common/src/config.rs"
+        
+        # ID na 443, Key com =
+        $SeuIP = "20.195.216.23:443"
+        $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
+        
+        if (Test-Path $ConfigFile) {
+           $content = Get-Content $ConfigFile -Raw
+           # A sintaxe do 1.1.9 é a mesma, podemos substituir
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
+           $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
+           Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
+           Write-Host "Configurado com sucesso!"
+        }
+
+    # 5. Instala Dependências C++ (Versão 32-bits)
+    - name: Install Dependencies (VCPKG x86)
+      run: |
+        # Clona o VCPKG se não existir no cache
+        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
+        cd C:\vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg integrate install
+        # Instala as libs estáticas para 32 bits
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+      shell: powershell
+
+    # 6. Baixa a DLL do Sciter (Motor Gráfico Leve)
+    - name: Download Sciter DLL
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "target\release"
+        # Baixa a versao 32-bits do Sciter
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.32/sciter.dll" -OutFile "target\release\sciter.dll"
+
+    # 7. Compilação (Cargo puro, sem Flutter)
+    - name: Build Legacy
+      run: |
+        # Define variaveis para o compilador achar as libs 32-bits
+        $env:VCPKG_ROOT = "C:\vcpkg"
+        $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+        
+        # Compila para arquitetura i686 (32-bit)
+        cargo build --target i686-pc-windows-msvc --release --features inline
+      shell: powershell
+
+    # 8. Empacotamento
+    - name: Package Legacy
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
+        
+        # Pega o executavel gerado
+        Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
+        
+        # Pega a DLL do Sciter (Obrigatoria)
+        Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
+        
+        Write-Host "Pacote Legacy Criado!"
+
+    - name: Upload Legacy
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saurus-Remote-Legacy-32bit
+        path: Saurus_Legacy_32bit
