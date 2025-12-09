@@ -60,24 +60,13 @@ jobs:
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # --- DOWNLOAD DLL (LINK CORRIGIDO E DEFINITIVO) ---
+    # --- DOWNLOAD DLL (CORREÇÃO: USANDO CURL) ---
     - name: Download Sciter DLL
-      shell: powershell
+      shell: cmd
       run: |
-        New-Item -ItemType Directory -Force -Path "target\release"
-        
-        # Link historico para a pasta bin.win/x32 (Commit de 2021)
-        # Este caminho é garantido de existir
-        $SciterUrl = "https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll"
-        
-        Write-Host "Baixando DLL de: $SciterUrl"
-        try {
-            Invoke-WebRequest -Uri $SciterUrl -OutFile "target\release\sciter.dll"
-            Write-Host "DLL Baixada com Sucesso!"
-        } catch {
-            Write-Error "Falha ao baixar DLL: $_"
-            exit 1
-        }
+        if not exist "target\release" mkdir target\release
+        echo Baixando DLL com CURL...
+        curl -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
     - name: Build Legacy
       run: |
