@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-legacy:
-    runs-on: windows-2019
+    runs-on: windows-2019 # Windows 2019 para melhor compatibilidade legado
     
     env:
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
@@ -26,9 +26,12 @@ jobs:
         key: vcpkg-legacy-x86-${{ hashFiles('vcpkg.json') }}
         restore-keys: vcpkg-legacy-x86-
 
-    - name: Setup Rust (32-bit)
-      uses: dtolnay/rust-toolchain@stable
+    # --- CORREÇÃO CRÍTICA: RUST 1.65 ---
+    # Usamos uma versao antiga do compilador para aceitar o codigo antigo do ntapi
+    - name: Setup Rust (32-bit Legacy)
+      uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: 1.65.0  # <--- Versao travada (2022) que aceita o codigo
         targets: i686-pc-windows-msvc
 
     - name: Install LLVM
@@ -60,7 +63,7 @@ jobs:
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # --- DOWNLOAD DLL (CORREÇÃO: USANDO CURL) ---
+    # --- DOWNLOAD DLL (Mantendo CURL que funcionou) ---
     - name: Download Sciter DLL
       shell: cmd
       run: |
