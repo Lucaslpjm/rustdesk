@@ -61,14 +61,11 @@ jobs:
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    # --- CORREÇÃO DE TIPAGEM (String vs Bytes) ---
     - name: Generate Inline UI Assets (Fixed Types)
       shell: python
       run: |
         import os
-        
         print("Gerando src/ui/inline.rs com tipos String...")
-        
         mapping = {
             "get_index": "index.html",
             "get_chatbox": "chatbox.html",
@@ -76,19 +73,14 @@ jobs:
             "get_install": "install.html",
             "get_remote": "remote.html"
         }
-        
         with open("src/ui/inline.rs", "w") as f:
             for func, filename in mapping.items():
-                # O RustDesk antigo espera String, entao convertemos os bytes
                 if os.path.exists(f"src/ui/{filename}"):
                     f.write(f'pub fn {func}() -> String {{\n')
                     f.write(f'    String::from_utf8_lossy(include_bytes!("{filename}")).to_string()\n')
                     f.write(f'}}\n\n')
                 else:
-                    print(f"AVISO: {filename} nao encontrado! Criando stub vazio.")
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n\n')
-                    
-        print("Arquivo inline.rs gerado corretamente!")
 
     - name: Ensure Resources Exist at Root
       shell: powershell
@@ -119,13 +111,18 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    - name: Install Dependencies (VCPKG x86)
+    # --- CORREÇÃO DO LIBSODIUM 32-BITS ---
+    - name: Install Dependencies (VCPKG x86 with Sodium)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+        # Adicionamos libsodium:x86-windows-static na lista
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static libsodium:x86-windows-static
+        
+        # FIX CRÍTICO: O Rust espera 'sodium.lib' mas o vcpkg entrega 'libsodium.lib'
+        Copy-Item "C:\vcpkg\installed\x86-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x86-windows-static\lib\sodium.lib" -Force
       shell: powershell
 
     - name: Download Sciter DLL
@@ -139,6 +136,10 @@ jobs:
         $env:VCPKG_ROOT = "C:\vcpkg"
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
+        
+        # FORÇAR O USO DO LIBSODIUM DO SISTEMA (VCPKG) E NÃO O EMBUTIDO
+        $env:SODIUM_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:SODIUM_STATIC = "1"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
