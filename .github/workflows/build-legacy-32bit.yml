@@ -8,9 +8,8 @@ jobs:
     runs-on: windows-2019
     
     env:
+      VCPKG_DEFAULT_TRIPLET: x86-windows-static
       RUSTDESK_API_SERVER: ""
-      # Define a raiz do VCPKG para o crate vcpkg encontrar
-      VCPKG_ROOT: "C:\\vcpkg"
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -24,8 +23,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: C:\vcpkg
-        key: vcpkg-legacy-final-v3-${{ hashFiles('vcpkg.json') }}
-        restore-keys: vcpkg-legacy-final-v3-
+        key: vcpkg-legacy-clean-v4-${{ hashFiles('vcpkg.json') }}
+        restore-keys: vcpkg-legacy-clean-v4-
 
     - name: Setup Rust (32-bit Legacy)
       uses: dtolnay/rust-toolchain@master
@@ -94,26 +93,18 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG DUPLA (32 e 64) ---
-    - name: Install Dependencies (VCPKG x86 + x64)
+    # --- INSTALAÇÃO DE DEPENDÊNCIAS (FINAL) ---
+    - name: Install Dependencies (VCPKG x86 Only)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
         
-        # Instala libs 32-bits (Para o App Final)
-        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static libsodium:x86-windows-static
-        
-        # Instala libs 64-bits (Para o Build Script do Rust)
-        .\vcpkg install libsodium:x64-windows-static
-        
-        # Truque de renomear libsodium.lib -> sodium.lib em AMBAS as pastas
-        # Isso garante que tanto o script de build quanto o compilador final achem o arquivo
-        Copy-Item "C:\vcpkg\installed\x86-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x86-windows-static\lib\sodium.lib" -Force
-        Copy-Item "C:\vcpkg\installed\x64-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x64-windows-static\lib\sodium.lib" -Force
-        
-        Write-Host "Bibliotecas configuradas para Dual-Arch!"
+        # REMOVEMOS O LIBSODIUM DAQUI.
+        # Ao nao instalar, o Rust vai compilar sua propria versao interna (Bundled).
+        # Isso resolve o conflito de 32/64 bits automaticamente.
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
     - name: Download Sciter DLL
@@ -124,18 +115,14 @@ jobs:
 
     - name: Build Legacy
       run: |
+        $env:VCPKG_ROOT = "C:\vcpkg"
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # --- A MÁGICA ESTÁ AQUI ---
-        # Definimos flags EXCLUSIVAS para o alvo i686 (32-bits).
-        # 1. crt-static: Usa runtime estático (compatível com as libs do vcpkg)
-        # 2. -L native=...: Força o linker a olhar na pasta 32-bits do VCPKG
-        # 3. -l static=sodium: Força a inclusão da biblioteca sodium.lib (que renomeamos)
+        # Garante que usamos bibliotecas estaticas do sistema
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
-        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -l static=sodium"
-        
-        # Removemos qualquer SODIUM_LIB_DIR global para não confundir o x64
+        # Sem variaveis de SODIUM. Deixamos o padrao (build from source).
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
