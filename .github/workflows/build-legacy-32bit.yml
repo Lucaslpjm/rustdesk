@@ -23,8 +23,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: C:\vcpkg
-        key: vcpkg-legacy-x86-x64-${{ hashFiles('vcpkg.json') }}
-        restore-keys: vcpkg-legacy-x86-x64-
+        key: vcpkg-legacy-x86-sodiumfix-${{ hashFiles('vcpkg.json') }}
+        restore-keys: vcpkg-legacy-x86-sodiumfix-
 
     - name: Setup Rust (32-bit Legacy)
       uses: dtolnay/rust-toolchain@master
@@ -65,45 +65,28 @@ jobs:
       shell: python
       run: |
         import os
-        print("Gerando src/ui/inline.rs com tipos String...")
-        mapping = {
-            "get_index": "index.html",
-            "get_chatbox": "chatbox.html",
-            "get_cm": "cm.html",
-            "get_install": "install.html",
-            "get_remote": "remote.html"
-        }
+        mapping = { "get_index": "index.html", "get_chatbox": "chatbox.html", "get_cm": "cm.html", "get_install": "install.html", "get_remote": "remote.html" }
         with open("src/ui/inline.rs", "w") as f:
             for func, filename in mapping.items():
                 if os.path.exists(f"src/ui/{filename}"):
-                    f.write(f'pub fn {func}() -> String {{\n')
-                    f.write(f'    String::from_utf8_lossy(include_bytes!("{filename}")).to_string()\n')
-                    f.write(f'}}\n\n')
+                    f.write(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{filename}")).to_string() }}\n')
                 else:
-                    f.write(f'pub fn {func}() -> String {{ String::new() }}\n\n')
+                    f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
     - name: Ensure Resources Exist at Root
       shell: powershell
       run: |
-        Write-Host "Procurando icon.ico e manifest.xml..."
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
         if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
-        else { 
-            try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" -OutFile ".\icon.ico" } 
-            catch { New-Item -Path ".\icon.ico" -ItemType File -Force }
-        }
-
+        else { try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" -OutFile ".\icon.ico" } catch { New-Item -Path ".\icon.ico" -ItemType File -Force } }
+        
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
         if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
-        else { 
-            try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" -OutFile ".\manifest.xml" } 
-            catch { Set-Content -Path ".\manifest.xml" -Value "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'></assembly>" }
-        }
+        else { try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" -OutFile ".\manifest.xml" } catch { Set-Content -Path ".\manifest.xml" -Value "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'></assembly>" } }
 
     - name: Fix Resource Paths in build.rs
       shell: powershell
       run: |
-        Write-Host "Aplicando caminhos absolutos..."
         $BuildRs = "build.rs"
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
         $content = Get-Content $BuildRs -Raw
@@ -111,24 +94,36 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- CORREÇÃO DE DEPENDÊNCIAS (DUPLA ARQUITETURA) ---
-    - name: Install Dependencies (VCPKG x86 + x64)
+    # --- INSTALACAO DE DEPENDENCIAS (SEM SODIUM NO VCPKG) ---
+    - name: Install Dependencies (VCPKG x86)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        
-        # 1. Instalamos as versoes 32-bits (Para o RustDesk final)
-        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static libsodium:x86-windows-static
-        
-        # 2. Instalamos as versoes 64-bits (Para o Build Script rodar no servidor)
-        .\vcpkg install libsodium:x64-windows-static
-        
-        # 3. Renomeamos as bibliotecas em AMBAS as pastas para o compilador achar
-        Copy-Item "C:\vcpkg\installed\x86-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x86-windows-static\lib\sodium.lib" -Force
-        Copy-Item "C:\vcpkg\installed\x64-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x64-windows-static\lib\sodium.lib" -Force
+        # NAO instalamos libsodium pelo VCPKG para evitar conflito
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
+
+    # --- DOWNLOAD MANUAL DO LIBSODIUM OFICIAL (FIX) ---
+    - name: Setup Official Libsodium (32-bit)
+      shell: powershell
+      run: |
+        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
+        $Zip = "libsodium.zip"
+        Invoke-WebRequest -Uri $Url -OutFile $Zip
+        Expand-Archive -Path $Zip -DestinationPath "libsodium_install"
+        
+        # Caminho da versao estatica 32-bits (Win32/Release/v142/static)
+        $LibPath = "libsodium_install\libsodium\Win32\Release\v142\static"
+        
+        # Cria pasta libs na raiz para organizar
+        New-Item -ItemType Directory -Force -Path "libs_custom"
+        
+        # Copia e renomeia para sodium.lib (o nome que o Rust quer)
+        Copy-Item "$LibPath\libsodium.lib" "libs_custom\sodium.lib"
+        
+        Write-Host "Libsodium configurado em libs_custom\sodium.lib"
 
     - name: Download Sciter DLL
       shell: cmd
@@ -142,11 +137,13 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # IMPORTANTE: Adicionamos AMBOS os caminhos ao LIB.
-        # O linker vai procurar e escolher o arquivo que bater com a arquitetura (x86 ou x64).
-        $env:LIB = "C:\vcpkg\installed\x86-windows-static\lib;C:\vcpkg\installed\x64-windows-static\lib;$env:LIB"
+        # CONFIGURAÇÃO DO SODIUM MANUAL
+        $env:SODIUM_LIB_DIR = "$(Get-Location)\libs_custom"
         
-        # Removemos o SODIUM_LIB_DIR fixo para nao travar o script
+        # FLAGS CRITICAS:
+        # +crt-static: Forca o Rust a usar Runtime Estatico (compativel com as libs baixadas)
+        # -L native=...: Garante que o linker ache nossa pasta libs_custom
+        $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=$(Get-Location)\libs_custom"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
