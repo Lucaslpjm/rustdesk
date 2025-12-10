@@ -9,6 +9,8 @@ jobs:
     
     env:
       RUSTDESK_API_SERVER: ""
+      # Define a raiz do VCPKG globalmente
+      VCPKG_ROOT: "C:\\vcpkg"
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -27,43 +29,35 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM (CORRIGIDO PARA CURL.EXE) ---
+    # --- SETUP LIBSODIUM (MANUAL - FUNCIONA) ---
     - name: Setup Official Libsodium (32-bit)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
         
-        Write-Host "Baixando Libsodium via CURL.EXE..."
-        # FIX: Usamos 'curl.exe' para evitar o alias do PowerShell
+        Write-Host "Baixando Libsodium..."
         & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
         
-        if (!(Test-Path $Zip)) {
-            Write-Error "ERRO CRITICO: Download do Libsodium falhou."
-            exit 1
-        }
+        if (!(Test-Path $Zip)) { Write-Error "Download falhou"; exit 1 }
         
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
-        # Caminho da lib estatica 32-bits
         $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         $IncSource = "libsodium_install\libsodium\include"
         
-        # Cria estrutura
         New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
         New-Item -ItemType Directory -Force -Path "C:\sodium\include"
         
-        # Copia com os dois nomes
         Copy-Item $LibSource "C:\sodium\lib\libsodium.lib" -Force
         Copy-Item $LibSource "C:\sodium\lib\sodium.lib" -Force
         Copy-Item "$IncSource\*" "C:\sodium\include" -Recurse -Force
         
-        Write-Host "Libsodium instalado em C:\sodium"
+        Write-Host "Libsodium OK em C:\sodium"
 
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Injetando Servidor Saurus..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
@@ -95,21 +89,16 @@ jobs:
                 else:
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
-    # --- RECURSOS (CORRIGIDO PARA CURL.EXE) ---
     - name: Ensure Resources Exist
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
         if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
-        else { 
-            & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
-        }
+        else { & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3 }
         
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
         if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
-        else { 
-            & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
-        }
+        else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
     - name: Fix Resource Paths in build.rs
       shell: powershell
@@ -121,12 +110,14 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    - name: Install Other Dependencies
+    # --- INSTALAÇÃO DE DEPENDÊNCIAS VCPKG ---
+    - name: Install Dependencies (VCPKG x86 Only)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
+        # Instalamos as versoes estaticas 32-bits
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
@@ -134,19 +125,37 @@ jobs:
       shell: cmd
       run: |
         if not exist "target\release" mkdir target\release
-        curl -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
+        curl.exe -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
-    # --- BUILD FINAL ---
+    # --- BUILD FINAL (FORÇANDO CAMINHOS) ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
+        # --- CONFIGURAÇÃO MANUAL (BYPASS AUTO-DETECTION) ---
+        # Apontamos diretamente para as pastas do VCPKG para o OPUS nao se perder
+        $VcpkgLib = "C:\vcpkg\installed\x86-windows-static\lib"
+        $VcpkgInc = "C:\vcpkg\installed\x86-windows-static\include"
+        
+        $env:OPUS_LIB_DIR = $VcpkgLib
+        $env:OPUS_INCLUDE_DIR = $VcpkgInc
+        $env:OPUS_STATIC = "1"
+        
+        $env:DEP_VPX_LIB = $VcpkgLib
+        $env:DEP_VPX_INCLUDE = $VcpkgInc
+        
+        # SODIUM (Manual)
         $env:SODIUM_LIB_DIR = "C:\sodium\lib"
         $env:SODIUM_INC_DIR = "C:\sodium\include"
         $env:SODIUM_SHARED = "false"
         
-        $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\sodium\lib -l static=libsodium"
-        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
+        # FLAGS:
+        # 1. +crt-static: Runtime estatico
+        # 2. -L native=...: Adiciona VCPKG e Sodium na busca do Linker
+        # 3. -l static=libsodium: OBRIGA a inclusão da biblioteca
+        
+        $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=$VcpkgLib -L native=C:\sodium\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
