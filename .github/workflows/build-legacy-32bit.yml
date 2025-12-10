@@ -9,8 +9,6 @@ jobs:
     
     env:
       RUSTDESK_API_SERVER: ""
-      # Define a raiz do VCPKG globalmente
-      VCPKG_ROOT: "C:\\vcpkg"
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -29,7 +27,7 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM (MANUAL - FUNCIONA) ---
+    # --- SETUP LIBSODIUM 32-BIT MANUALMENTE ---
     - name: Setup Official Libsodium (32-bit)
       shell: powershell
       run: |
@@ -43,17 +41,20 @@ jobs:
         
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
+        # Caminho da lib estatica 32-bits
         $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         $IncSource = "libsodium_install\libsodium\include"
         
+        # Cria estrutura em C:\sodium
         New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
         New-Item -ItemType Directory -Force -Path "C:\sodium\include"
         
+        # Copia com os dois nomes para garantir
         Copy-Item $LibSource "C:\sodium\lib\libsodium.lib" -Force
         Copy-Item $LibSource "C:\sodium\lib\sodium.lib" -Force
         Copy-Item "$IncSource\*" "C:\sodium\include" -Recurse -Force
         
-        Write-Host "Libsodium OK em C:\sodium"
+        Write-Host "Libsodium 32-bits OK em C:\sodium"
 
     - name: Inject Server Configuration
       shell: powershell
@@ -110,14 +111,12 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALAÇÃO DE DEPENDÊNCIAS VCPKG ---
-    - name: Install Dependencies (VCPKG x86 Only)
+    - name: Install Other Dependencies (VCPKG)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        # Instalamos as versoes estaticas 32-bits
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
@@ -127,35 +126,24 @@ jobs:
         if not exist "target\release" mkdir target\release
         curl.exe -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
-    # --- BUILD FINAL (FORÇANDO CAMINHOS) ---
+    # --- BUILD FINAL (COM CORREÇÃO DE TARGET) ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # --- CONFIGURAÇÃO MANUAL (BYPASS AUTO-DETECTION) ---
-        # Apontamos diretamente para as pastas do VCPKG para o OPUS nao se perder
-        $VcpkgLib = "C:\vcpkg\installed\x86-windows-static\lib"
-        $VcpkgInc = "C:\vcpkg\installed\x86-windows-static\include"
-        
-        $env:OPUS_LIB_DIR = $VcpkgLib
-        $env:OPUS_INCLUDE_DIR = $VcpkgInc
-        $env:OPUS_STATIC = "1"
-        
-        $env:DEP_VPX_LIB = $VcpkgLib
-        $env:DEP_VPX_INCLUDE = $VcpkgInc
-        
-        # SODIUM (Manual)
+        # Variáveis para o libsodium-sys encontrar nossa pasta (Apenas se o script pedir)
         $env:SODIUM_LIB_DIR = "C:\sodium\lib"
         $env:SODIUM_INC_DIR = "C:\sodium\include"
         $env:SODIUM_SHARED = "false"
         
-        # FLAGS:
-        # 1. +crt-static: Runtime estatico
-        # 2. -L native=...: Adiciona VCPKG e Sodium na busca do Linker
-        # 3. -l static=libsodium: OBRIGA a inclusão da biblioteca
+        # --- A MÁGICA ---
+        # Não usamos RUSTFLAGS globalmente!
+        # Usamos uma variável que só afeta o alvo 32-bits (i686).
+        # Assim, o script de build (64-bits) não tenta linkar com a lib errada.
         
-        $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=$VcpkgLib -L native=C:\sodium\lib -l static=libsodium"
+        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\sodium\lib -l static=libsodium"
+        
+        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
