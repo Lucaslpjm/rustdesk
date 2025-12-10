@@ -8,7 +8,6 @@ jobs:
     runs-on: windows-2019
     
     env:
-      VCPKG_DEFAULT_TRIPLET: x86-windows-static
       RUSTDESK_API_SERVER: ""
 
     steps:
@@ -19,13 +18,7 @@ jobs:
         ref: 1.1.9
         submodules: recursive
 
-    - name: Cache VCPKG
-      uses: actions/cache@v4
-      with:
-        path: C:\vcpkg
-        key: vcpkg-legacy-clean-v4-${{ hashFiles('vcpkg.json') }}
-        restore-keys: vcpkg-legacy-clean-v4-
-
+    # --- SETUP RUST ANTIGO (Compativel com codigo 2021) ---
     - name: Setup Rust (32-bit Legacy)
       uses: dtolnay/rust-toolchain@master
       with:
@@ -35,12 +28,38 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
+    # --- CONFIGURAÇÃO MANUAL DO LIBSODIUM (SEM VCPKG) ---
+    - name: Setup Libsodium Manual (32-bit)
+      shell: powershell
+      run: |
+        Write-Host "Baixando Libsodium Oficial..."
+        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
+        Invoke-WebRequest -Uri $Url -OutFile "libsodium.zip"
+        Expand-Archive "libsodium.zip" -DestinationPath "."
+        
+        # Caminho da biblioteca estatica 32-bits no ZIP oficial
+        $SourceLib = "libsodium\libsodium\Win32\Release\v142\static\libsodium.lib"
+        $SourceInc = "libsodium\libsodium\include"
+        
+        # Cria pastas limpas na raiz C:\ para facilitar o linker
+        New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
+        New-Item -ItemType Directory -Force -Path "C:\sodium\include"
+        
+        # Copia a biblioteca
+        Copy-Item $SourceLib "C:\sodium\lib\libsodium.lib"
+        # Cria copia com nome 'sodium.lib' (Rust as vezes procura esse)
+        Copy-Item $SourceLib "C:\sodium\lib\sodium.lib"
+        
+        # Copia os headers (include)
+        Copy-Item "$SourceInc\*" "C:\sodium\include" -Recurse
+        
+        Write-Host "Libsodium instalado em C:\sodium"
+
     - name: Inject Server Configuration
       shell: powershell
       run: |
         Write-Host "Injetando Servidor Saurus (Legacy)..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
         
@@ -49,19 +68,17 @@ jobs:
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-           Write-Host "Configurado com sucesso!"
         }
 
     - name: Fix Legacy Code Logic (Locks)
       shell: powershell
       run: |
-        Write-Host "Corrigindo bug de Lock..."
         $ConfigFile = "libs\hbb_common\src\config.rs"
         $content = Get-Content $ConfigFile -Raw
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    - name: Generate Inline UI Assets (Fixed Types)
+    - name: Generate Inline UI Assets
       shell: python
       run: |
         import os
@@ -73,7 +90,7 @@ jobs:
                 else:
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
-    - name: Ensure Resources Exist at Root
+    - name: Ensure Resources Exist
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
@@ -93,17 +110,13 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALAÇÃO DE DEPENDÊNCIAS (FINAL) ---
-    - name: Install Dependencies (VCPKG x86 Only)
+    # --- INSTALAÇÃO DEPENDENCIAS RESTANTES (VCPKG SOMENTE PARA AUXILIARES) ---
+    - name: Install Other Dependencies
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        
-        # REMOVEMOS O LIBSODIUM DAQUI.
-        # Ao nao instalar, o Rust vai compilar sua propria versao interna (Bundled).
-        # Isso resolve o conflito de 32/64 bits automaticamente.
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
@@ -113,16 +126,25 @@ jobs:
         if not exist "target\release" mkdir target\release
         curl -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
+    # --- BUILD FINAL (COM LINKAGEM FORÇADA) ---
     - name: Build Legacy
       run: |
-        $env:VCPKG_ROOT = "C:\vcpkg"
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+        
+        # Variaveis para o script do libsodium-sys encontrar nossa pasta C:\sodium
+        $env:SODIUM_LIB_DIR = "C:\sodium\lib"
+        $env:SODIUM_INC_DIR = "C:\sodium\include"
+        $env:SODIUM_SHARED = "false"
+        
+        # FLAGS DO COMPILADOR:
+        # -C target-feature=+crt-static : Empacota tudo (não pede DLLs do Windows)
+        # -L native=C:\sodium\lib       : Adiciona nossa pasta na busca do Linker
+        # -l static=libsodium           : OBRIGA o linker a incluir libsodium.lib
+        
+        $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\sodium\lib -l static=libsodium"
+        
+        # Ajuda o bindgen a achar os headers do VCPKG
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
-        
-        # Garante que usamos bibliotecas estaticas do sistema
-        $env:RUSTFLAGS = "-C target-feature=+crt-static"
-        
-        # Sem variaveis de SODIUM. Deixamos o padrao (build from source).
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
