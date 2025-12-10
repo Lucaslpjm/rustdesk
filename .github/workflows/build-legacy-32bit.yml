@@ -11,7 +11,6 @@ jobs:
       RUSTDESK_API_SERVER: ""
 
     steps:
-    # 1. Baixa o código fonte antigo (1.1.9)
     - name: Checkout Legacy Code (1.1.9)
       uses: actions/checkout@v4
       with:
@@ -19,53 +18,48 @@ jobs:
         ref: 1.1.9
         submodules: recursive
 
-    # 2. Configura o Rust na versão da época (2022) para compatibilidade
     - name: Setup Rust (1.65.0)
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # 3. Instala LLVM 12 (Necessário para o bindgen antigo)
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM (BLINDADO COM CURL) ---
+    # --- SETUP LIBSODIUM (CORRIGIDO PARA CURL.EXE) ---
     - name: Setup Official Libsodium (32-bit)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
         
-        Write-Host "Baixando Libsodium via CURL (Com Retentativa)..."
-        # Curl é mais robusto que PowerShell. Tenta 5 vezes se falhar.
-        & curl -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
+        Write-Host "Baixando Libsodium via CURL.EXE..."
+        # FIX: Usamos 'curl.exe' para evitar o alias do PowerShell
+        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
         
         if (!(Test-Path $Zip)) {
-            Write-Error "ERRO CRITICO: Download do Libsodium falhou após tentativas."
+            Write-Error "ERRO CRITICO: Download do Libsodium falhou."
             exit 1
         }
         
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
-        # Caminho exato da lib estatica 32-bits (Visual Studio 2019+)
+        # Caminho da lib estatica 32-bits
         $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         $IncSource = "libsodium_install\libsodium\include"
         
-        # Cria estrutura limpa em C:\sodium
+        # Cria estrutura
         New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
         New-Item -ItemType Directory -Force -Path "C:\sodium\include"
         
-        # Copia a biblioteca com DOIS nomes para garantir que o Rust ache
+        # Copia com os dois nomes
         Copy-Item $LibSource "C:\sodium\lib\libsodium.lib" -Force
         Copy-Item $LibSource "C:\sodium\lib\sodium.lib" -Force
-        
-        # Copia os headers
         Copy-Item "$IncSource\*" "C:\sodium\include" -Recurse -Force
         
-        Write-Host "Libsodium 32-bits instalado com sucesso em C:\sodium"
+        Write-Host "Libsodium instalado em C:\sodium"
 
-    # 4. Injeta seu Servidor Saurus no código
     - name: Inject Server Configuration
       shell: powershell
       run: |
@@ -81,7 +75,6 @@ jobs:
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
         }
 
-    # 5. Corrige bug de lógica do código antigo (Trava de memória)
     - name: Fix Legacy Code Logic (Locks)
       shell: powershell
       run: |
@@ -90,7 +83,6 @@ jobs:
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    # 6. Gera os arquivos de interface que faltavam (Python)
     - name: Generate Inline UI Assets
       shell: python
       run: |
@@ -99,29 +91,26 @@ jobs:
         with open("src/ui/inline.rs", "w") as f:
             for func, filename in mapping.items():
                 if os.path.exists(f"src/ui/{filename}"):
-                    # Converte bytes para String para satisfazer o compilador
                     f.write(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{filename}")).to_string() }}\n')
                 else:
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
-    # 7. Garante que Icone e Manifesto existem (Com CURL)
+    # --- RECURSOS (CORRIGIDO PARA CURL.EXE) ---
     - name: Ensure Resources Exist
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
         if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
         else { 
-            # Tenta baixar com Curl se não achar localmente
-            & curl -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
+            & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
         }
         
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
         if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
         else { 
-            & curl -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
+            & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
         }
 
-    # 8. Corrige caminhos no build script
     - name: Fix Resource Paths in build.rs
       shell: powershell
       run: |
@@ -132,47 +121,36 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # 9. Instala dependências auxiliares via VCPKG (SEM Sodium)
     - name: Install Other Dependencies
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        # Instalamos apenas o necessario que funciona bem no VCPKG
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # 10. Baixa a DLL gráfica do Sciter
     - name: Download Sciter DLL
       shell: cmd
       run: |
         if not exist "target\release" mkdir target\release
         curl -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
-    # --- BUILD FINAL (AQUI ACONTECE A MÁGICA) ---
+    # --- BUILD FINAL ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         
-        # Variáveis para o script interno achar nossa lib manual
         $env:SODIUM_LIB_DIR = "C:\sodium\lib"
         $env:SODIUM_INC_DIR = "C:\sodium\include"
         $env:SODIUM_SHARED = "false"
         
-        # FLAGS OBRIGATÓRIAS:
-        # 1. +crt-static: Runtime estático (compatível com as libs baixadas)
-        # 2. -L native=...: Adiciona C:\sodium\lib na busca
-        # 3. -l static=libsodium: OBRIGA a inclusão da biblioteca
         $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\sodium\lib -l static=libsodium"
-        
-        # Ajuda a achar headers do VCPKG
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
-    # 11. Empacota tudo numa pasta pronta
     - name: Package Legacy
       shell: powershell
       run: |
