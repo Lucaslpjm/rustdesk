@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final)
+name: Build Saurus Legacy (32-bit Final Fixed)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
       RUSTDESK_API_SERVER: ""
       # Define a raiz do VCPKG
       VCPKG_ROOT: "C:\\vcpkg"
-      # Define o triplet padrao para 32-bits (Importante para o Opus/VPX acharem as libs)
+      # Define o triplet padrão para 32-bits
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
@@ -31,28 +31,35 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- INSTALAÇÃO VCPKG (32-bits) ---
-    - name: Install Dependencies (VCPKG x86)
-      run: |
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-        .\bootstrap-vcpkg.bat
-        .\vcpkg integrate install
-        
-        # Instalamos TUDO em 32-bits estatico (Incluindo Sodium e Opus)
-        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static libsodium:x86-windows-static
-        
-        # Truque: O Rust antigo procura por 'sodium.lib', mas o VCPKG cria 'libsodium.lib'
-        # Fazemos uma copia para garantir que ele encontre
-        Copy-Item "C:\vcpkg\installed\x86-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x86-windows-static\lib\sodium.lib" -Force
-        
-        Write-Host "Dependencias x86 instaladas e ajustadas."
+    # --- SETUP LIBSODIUM 32-BIT MANUAL ---
+    - name: Setup Official Libsodium (32-bit)
       shell: powershell
+      run: |
+        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
+        $Zip = "libsodium.zip"
+        
+        Write-Host "Baixando Libsodium..."
+        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
+        
+        if (!(Test-Path $Zip)) { Write-Error "Download falhou"; exit 1 }
+        
+        Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
+        
+        $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
+        $IncSource = "libsodium_install\libsodium\include"
+        
+        New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
+        New-Item -ItemType Directory -Force -Path "C:\sodium\include"
+        
+        Copy-Item $LibSource "C:\sodium\lib\libsodium.lib" -Force
+        Copy-Item $LibSource "C:\sodium\lib\sodium.lib" -Force
+        Copy-Item "$IncSource\*" "C:\sodium\include" -Recurse -Force
+        
+        Write-Host "Libsodium 32-bits OK em C:\sodium"
 
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Injetando Servidor Saurus..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
@@ -104,31 +111,48 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    - name: Download Sciter DLL
-      shell: cmd
+    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
+    - name: Install Dependencies (VCPKG x86)
       run: |
-        if not exist "target\release" mkdir target\release
-        curl.exe -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
+        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
+        cd C:\vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg integrate install
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+      shell: powershell
 
-    # --- BUILD FINAL (CONFIGURAÇÃO BLINDADA) ---
+    # --- CORREÇÃO CRÍTICA DO SCITER DLL ---
+    - name: Download Sciter DLL (Fixed Source)
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "target\release"
+        
+        # Link do Master (Atual e Funcional para 32-bits)
+        $SciterUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x32/sciter.dll"
+        
+        Write-Host "Baixando Sciter DLL 32-bit de: $SciterUrl"
+        & curl.exe -L -o target\release\sciter.dll $SciterUrl --retry 5
+        
+        # Verificação de segurança: Se o arquivo for muito pequeno, é erro (ex: 404 html)
+        $size = (Get-Item "target\release\sciter.dll").Length
+        if ($size -lt 1000000) { 
+            Write-Error "FALHA: O arquivo sciter.dll baixado parece corrompido (Tamanho: $size bytes). Link quebrado." 
+            exit 1 
+        }
+        Write-Host "DLL Baixada com Sucesso (Tamanho: $size bytes)"
+
+    # --- BUILD FINAL ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # --- FIX MAGNUM-OPUS ---
-        # Definimos explicitamente onde estao as libs do VCPKG para o Opus nao se perder
-        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
-        $env:OPUS_STATIC = "1"
+        # Config Sodium Manual
+        $env:SODIUM_LIB_DIR = "C:\sodium\lib"
+        $env:SODIUM_SHARED = "false"
         
-        # --- FIX LIBSODIUM & LINKER ---
-        # NAO definimos SODIUM_LIB_DIR globalmente! Isso quebrava o host build (x64).
-        # Usamos CARGO_TARGET... para injetar flags APENAS na compilação final (32-bits).
-        # O -L native aponta para o VCPKG (onde renomeamos para sodium.lib)
-        # O -l static=sodium força o linker a pegar o arquivo
-        
-        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -l static=sodium"
+        # Flags de compilação 32-bits com linkagem manual
+        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\sodium\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
