@@ -61,16 +61,14 @@ jobs:
         $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    # --- NOVO PASSO: GERAR ASSETS DA INTERFACE ---
-    # Cria o arquivo src/ui/inline.rs que estava faltando
-    - name: Generate Inline UI Assets
+    # --- CORREÇÃO DE TIPAGEM (String vs Bytes) ---
+    - name: Generate Inline UI Assets (Fixed Types)
       shell: python
       run: |
         import os
         
-        print("Gerando src/ui/inline.rs...")
+        print("Gerando src/ui/inline.rs com tipos String...")
         
-        # Mapeia as funcoes que o Rust reclama que faltam -> para os arquivos HTML reais
         mapping = {
             "get_index": "index.html",
             "get_chatbox": "chatbox.html",
@@ -81,17 +79,16 @@ jobs:
         
         with open("src/ui/inline.rs", "w") as f:
             for func, filename in mapping.items():
-                # O Rust usa o macro include_bytes! para embutir o HTML no EXE
+                # O RustDesk antigo espera String, entao convertemos os bytes
                 if os.path.exists(f"src/ui/{filename}"):
-                    f.write(f'pub fn {func}() -> &\'static [u8] {{\n')
-                    f.write(f'    include_bytes!("{filename}")\n')
+                    f.write(f'pub fn {func}() -> String {{\n')
+                    f.write(f'    String::from_utf8_lossy(include_bytes!("{filename}")).to_string()\n')
                     f.write(f'}}\n\n')
                 else:
-                    # Se nao achar o arquivo (raro), cria uma funcao vazia para nao travar
-                    print(f"AVISO: {filename} nao encontrado! Criando stub.")
-                    f.write(f'pub fn {func}() -> &\'static [u8] {{ &[] }}\n\n')
+                    print(f"AVISO: {filename} nao encontrado! Criando stub vazio.")
+                    f.write(f'pub fn {func}() -> String {{ String::new() }}\n\n')
                     
-        print("Arquivo inline.rs gerado com sucesso!")
+        print("Arquivo inline.rs gerado corretamente!")
 
     - name: Ensure Resources Exist at Root
       shell: powershell
@@ -143,7 +140,6 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # O flag --features inline agora vai funcionar porque criamos o arquivo
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
