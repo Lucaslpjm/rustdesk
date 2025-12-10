@@ -23,8 +23,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: C:\vcpkg
-        key: vcpkg-legacy-x86-${{ hashFiles('vcpkg.json') }}
-        restore-keys: vcpkg-legacy-x86-
+        key: vcpkg-legacy-x86-x64-${{ hashFiles('vcpkg.json') }}
+        restore-keys: vcpkg-legacy-x86-x64-
 
     - name: Setup Rust (32-bit Legacy)
       uses: dtolnay/rust-toolchain@master
@@ -111,17 +111,23 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    - name: Install Dependencies (VCPKG x86 with Sodium)
+    # --- CORREÇÃO DE DEPENDÊNCIAS (DUPLA ARQUITETURA) ---
+    - name: Install Dependencies (VCPKG x86 + x64)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        # Instalamos libsodium estatico
+        
+        # 1. Instalamos as versoes 32-bits (Para o RustDesk final)
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static libsodium:x86-windows-static
         
-        # Truque de renomear para sodium.lib
+        # 2. Instalamos as versoes 64-bits (Para o Build Script rodar no servidor)
+        .\vcpkg install libsodium:x64-windows-static
+        
+        # 3. Renomeamos as bibliotecas em AMBAS as pastas para o compilador achar
         Copy-Item "C:\vcpkg\installed\x86-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x86-windows-static\lib\sodium.lib" -Force
+        Copy-Item "C:\vcpkg\installed\x64-windows-static\lib\libsodium.lib" "C:\vcpkg\installed\x64-windows-static\lib\sodium.lib" -Force
       shell: powershell
 
     - name: Download Sciter DLL
@@ -136,11 +142,11 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # AQUI ESTA A CORREÇÃO:
-        # Apontamos para a pasta do VCPKG onde está o sodium.lib
-        $env:SODIUM_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
-        # Removemos o SODIUM_STATIC que causava panico
-        # A ausencia de SODIUM_SHARED ja forca o estatico
+        # IMPORTANTE: Adicionamos AMBOS os caminhos ao LIB.
+        # O linker vai procurar e escolher o arquivo que bater com a arquitetura (x86 ou x64).
+        $env:LIB = "C:\vcpkg\installed\x86-windows-static\lib;C:\vcpkg\installed\x64-windows-static\lib;$env:LIB"
+        
+        # Removemos o SODIUM_LIB_DIR fixo para nao travar o script
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
