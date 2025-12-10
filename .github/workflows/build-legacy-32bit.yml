@@ -23,8 +23,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: C:\vcpkg
-        key: vcpkg-legacy-x86-sodiumfix-${{ hashFiles('vcpkg.json') }}
-        restore-keys: vcpkg-legacy-x86-sodiumfix-
+        key: vcpkg-legacy-x86-sodiumfix-v2-${{ hashFiles('vcpkg.json') }}
+        restore-keys: vcpkg-legacy-x86-sodiumfix-v2-
 
     - name: Setup Rust (32-bit Legacy)
       uses: dtolnay/rust-toolchain@master
@@ -79,7 +79,6 @@ jobs:
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
         if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
         else { try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" -OutFile ".\icon.ico" } catch { New-Item -Path ".\icon.ico" -ItemType File -Force } }
-        
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
         if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
         else { try { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" -OutFile ".\manifest.xml" } catch { Set-Content -Path ".\manifest.xml" -Value "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'></assembly>" } }
@@ -94,18 +93,16 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALACAO DE DEPENDENCIAS (SEM SODIUM NO VCPKG) ---
     - name: Install Dependencies (VCPKG x86)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        # NAO instalamos libsodium pelo VCPKG para evitar conflito
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # --- DOWNLOAD MANUAL DO LIBSODIUM OFICIAL (FIX) ---
+    # --- SETUP LIBSODIUM OFICIAL (DUPLA NOMEAÇÃO) ---
     - name: Setup Official Libsodium (32-bit)
       shell: powershell
       run: |
@@ -114,16 +111,18 @@ jobs:
         Invoke-WebRequest -Uri $Url -OutFile $Zip
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install"
         
-        # Caminho da versao estatica 32-bits (Win32/Release/v142/static)
-        $LibPath = "libsodium_install\libsodium\Win32\Release\v142\static"
+        # Caminho da versao 32-bits estatica
+        $LibPath = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         
-        # Cria pasta libs na raiz para organizar
+        # Cria pasta customizada
         New-Item -ItemType Directory -Force -Path "libs_custom"
         
-        # Copia e renomeia para sodium.lib (o nome que o Rust quer)
-        Copy-Item "$LibPath\libsodium.lib" "libs_custom\sodium.lib"
+        # Copia mantendo o nome original (libsodium.lib) - O compilador pede esse!
+        Copy-Item $LibPath "libs_custom\libsodium.lib" -Force
+        # Copia tambem como sodium.lib (por garantia)
+        Copy-Item $LibPath "libs_custom\sodium.lib" -Force
         
-        Write-Host "Libsodium configurado em libs_custom\sodium.lib"
+        Write-Host "Libsodium instalado em libs_custom (com ambos os nomes)"
 
     - name: Download Sciter DLL
       shell: cmd
@@ -137,12 +136,10 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # CONFIGURAÇÃO DO SODIUM MANUAL
+        # Aponta para nossa pasta customizada
         $env:SODIUM_LIB_DIR = "$(Get-Location)\libs_custom"
         
-        # FLAGS CRITICAS:
-        # +crt-static: Forca o Rust a usar Runtime Estatico (compativel com as libs baixadas)
-        # -L native=...: Garante que o linker ache nossa pasta libs_custom
+        # Flags para usar runtime estatico e procurar na nossa pasta
         $env:RUSTFLAGS = "-C target-feature=+crt-static -L native=$(Get-Location)\libs_custom"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
