@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Dec 2021)
+name: Build Saurus Legacy (32-bit Final Production)
 
 on:
   workflow_dispatch:
@@ -29,37 +29,30 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP FERRAMENTAS (CHOCO) ---
-    # Instalamos NASM e YASM por fora para o VCPKG nao tentar baixar e falhar
+    # --- SETUP FERRAMENTAS ---
     - name: Install Build Tools
       run: choco install nasm yasm -y
 
-    # --- SETUP VCPKG (VERSÃO 2021) ---
+    # --- SETUP VCPKG (VERSÃO ESTÁVEL 2021) ---
     - name: Install Dependencies (VCPKG 2021)
       shell: powershell
       run: |
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
-        
-        Write-Host "Clonando VCPKG..."
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         
-        # COMMIT DE DEZEMBRO 2021 (Compativel com RustDesk 1.1.9 e sem erro de pkgconf)
-        Write-Host "Voltando no tempo (Dez 2021)..."
+        # Commit de Dezembro 2021 (Estavel para RustDesk 1.1.9)
+        Write-Host "Configurando VCPKG (Retro)..."
         git -c advice.detachedHead=false checkout e437016b8015eb6b321c17296068222d10335013
         
-        # Bootstrap
-        Write-Host "Bootstrap..."
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
         
-        # Instala Libs (Com VCPKG_USE_SYSTEM_BINARIES para usar o NASM do Choco)
         $env:VCPKG_USE_SYSTEM_BINARIES = "1"
-        
         Write-Host "Instalando bibliotecas..."
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
         
-        Write-Host "VCPKG 2021 configurado!"
+        Write-Host "VCPKG pronto!"
 
     # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
     - name: Setup Libsodium (Manual 32-bit)
@@ -67,7 +60,7 @@ jobs:
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
-        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
+        & curl.exe -L -o $Zip $Url --retry 5 --connect-timeout 60
         if (!(Test-Path $Zip)) { throw "Download falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
@@ -132,16 +125,37 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- DOWNLOAD SCITER (FIXED ZIP 2021) ---
-    - name: Download Sciter DLL (Safe Zip)
+    # --- DOWNLOAD SCITER DLL (MULTI-SOURCE ROBUSTO) ---
+    - name: Download Sciter DLL (Robust)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
-        $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
-        & curl.exe -L -o sciter.zip $ZipUrl --retry 5
-        Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
-        $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
-        if (Test-Path $DllSource) { Copy-Item $DllSource "target\release\sciter.dll" -Force }
+        $OutFile = "target\release\sciter.dll"
+        
+        # Lista de URLs para tentar (Master e Commit Antigo)
+        $Urls = @(
+          "https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x32/sciter.dll",
+          "https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x32/sciter.dll",
+          "https://raw.githubusercontent.com/c-smile/sciter-sdk/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll"
+        )
+        
+        $Success = $false
+        foreach ($Link in $Urls) {
+            Write-Host "Tentando baixar de: $Link"
+            & curl.exe -L -o $OutFile $Link --retry 2 --connect-timeout 20 -f
+            
+            # Valida se baixou algo real (> 1MB)
+            if ((Test-Path $OutFile) -and (Get-Item $OutFile).Length -gt 1000000) {
+                Write-Host "Sucesso! DLL valida baixada."
+                $Success = $true
+                break
+            }
+            Write-Warning "Falha ou arquivo invalido. Tentando proximo..."
+        }
+        
+        if (-not $Success) {
+            throw "ERRO CRITICO: Nao foi possivel baixar uma sciter.dll valida."
+        }
 
     # --- BUILD FINAL ---
     - name: Build Legacy
@@ -149,16 +163,18 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # OPUS Manual (VCPKG 2021)
+        # Variaveis MANUAIS para o VCPKG 2021 (Opus/VPX)
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
+        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
         
-        # SODIUM Manual (Nossa pasta isolada)
+        # SODIUM Manual
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags para o TARGET i686 (32-bits)
+        # Flags de linkagem manual para 32-bits
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
