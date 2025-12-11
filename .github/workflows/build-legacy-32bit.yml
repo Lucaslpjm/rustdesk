@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (Final Stable)
+name: Build Saurus Legacy (32-bit Final Robust)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,8 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      # Não definimos Triplet global para não travar o Host x64
+      # Definimos o triplet padrao para 32-bits para o VCPKG (Opus/VPX)
+      VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -29,36 +30,56 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM 32-BIT MANUAL (C:\sodium) ---
-    - name: Setup Libsodium (Manual 32-bit)
+    # --- SETUP VCPKG (COM RETRY PARA ERRO 503) ---
+    - name: Install Dependencies (VCPKG x86 Only)
       shell: powershell
       run: |
-        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
-        $Zip = "libsodium.zip"
+        # 1. Clone ou Atualizacao
+        if (!(Test-Path C:\vcpkg)) { 
+            git clone https://github.com/microsoft/vcpkg.git C:\vcpkg 
+        }
+        cd C:\vcpkg
+
+        # 2. Bootstrap com Loop de Retentativa (Correção para erro 503)
+        $maxRetries = 5
+        $retryCount = 0
+        $success = $false
         
-        Write-Host "Baixando Libsodium..."
-        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
+        while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+                Write-Host "Tentativa de Bootstrap VCPKG ($($retryCount + 1)/$maxRetries)..."
+                # Executa o bootstrap. Se falhar o download, vai para o catch
+                cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+                
+                if (Test-Path "vcpkg.exe") {
+                    $success = $true
+                    Write-Host "VCPKG Bootstrap com sucesso!"
+                } else {
+                    throw "vcpkg.exe nao foi criado"
+                }
+            } catch {
+                Write-Warning "Falha no Bootstrap (Erro de Rede). Retentando em 15s..."
+                Start-Sleep -Seconds 15
+                $retryCount++
+            }
+        }
         
-        if (!(Test-Path $Zip)) { Write-Error "Download falhou"; exit 1 }
+        if (-not $success) {
+            Write-Error "FALHA FATAL: Nao foi possivel iniciar o VCPKG apos $maxRetries tentativas."
+            exit 1
+        }
+
+        # 3. Integração e Instalação das Libs
+        .\vcpkg integrate install
         
-        Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
-        
-        $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
-        $IncSource = "libsodium_install\libsodium\include"
-        
-        New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
-        New-Item -ItemType Directory -Force -Path "C:\sodium\include"
-        
-        # Copia com os dois nomes para garantir
-        Copy-Item $LibSource "C:\sodium\lib\libsodium.lib" -Force
-        Copy-Item $LibSource "C:\sodium\lib\sodium.lib" -Force
-        Copy-Item "$IncSource\*" "C:\sodium\include" -Recurse -Force
-        
-        Write-Host "Libsodium 32-bits pronto em C:\sodium"
+        # Instala libs de midia (Com retry interno do vcpkg)
+        # NAO instalamos libsodium aqui para evitar conflitos
+        cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
 
     - name: Inject Server Configuration
       shell: powershell
       run: |
+        Write-Host "Injetando Servidor Saurus..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
@@ -90,27 +111,22 @@ jobs:
                 else:
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
-    # --- RECURSOS (SINTAXE CORRIGIDA E EXPANDIDA) ---
     - name: Ensure Resources Exist
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
         
         if ($icon) {
-            Write-Host "Icone encontrado localmente."
             Copy-Item $icon.FullName -Destination ".\icon.ico" -Force 
         } else {
-            Write-Host "Baixando icone do repositorio..."
             & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
         }
 
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
         
         if ($manifest) {
-            Write-Host "Manifesto encontrado localmente."
             Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force 
         } else {
-            Write-Host "Baixando manifesto do repositorio..."
             & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
         }
 
@@ -124,39 +140,54 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
-    - name: Install Dependencies (VCPKG x86)
-      run: |
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-        .\bootstrap-vcpkg.bat
-        .\vcpkg integrate install
-        # Instalamos Opus/VPX/YUV. (Sodium não, pois usaremos o manual)
-        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+    # --- SETUP LIBSODIUM 32-BIT MANUAL (ISOLADO) ---
+    - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
+      run: |
+        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
+        $Zip = "libsodium.zip"
+        
+        Write-Host "Baixando Libsodium..."
+        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
+        
+        if (!(Test-Path $Zip)) { Write-Error "Download falhou"; exit 1 }
+        
+        Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
+        
+        $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
+        $IncSource = "libsodium_install\libsodium\include"
+        
+        # Cria pasta ISOLADA 'libs_x86'
+        New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
+        New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
+        
+        Copy-Item $LibSource "C:\libs_x86\lib\libsodium.lib" -Force
+        Copy-Item $LibSource "C:\libs_x86\lib\sodium.lib" -Force
+        Copy-Item "$IncSource\*" "C:\libs_x86\include" -Recurse -Force
+        
+        Write-Host "Libsodium 32-bits isolado em C:\libs_x86"
 
-    # --- DOWNLOAD SCITER (FIX BAD IMAGE - VIA ZIP) ---
-    - name: Download Sciter DLL (Safe Zip)
+    # --- DOWNLOAD SCITER DLL (METODO ZIP BLINDADO) ---
+    - name: Download Sciter DLL (Safe Zip Method)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
         
-        # Baixa o ZIP de um commit antigo (2021) que temos certeza que funciona
+        Write-Host "Baixando Sciter SDK (ZIP Completo)..."
         $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
-        
-        Write-Host "Baixando Sciter SDK (Commit 2021)..."
         & curl.exe -L -o sciter.zip $ZipUrl --retry 5
         
+        Write-Host "Extraindo sciter.dll..."
         Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
         
-        # Caminho da DLL 32-bits dentro do ZIP extraido
+        # Pega a versao 32-bits dentro do ZIP extraido
         $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
         
         if (Test-Path $DllSource) {
             Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter 32-bit restaurada com sucesso!"
+            Write-Host "DLL 32-bit extraida e posicionada com sucesso!"
         } else {
-            Write-Error "DLL Sciter nao encontrada no ZIP."
+            Write-Error "ERRO: Nao foi possivel encontrar a sciter.dll dentro do ZIP."
             exit 1
         }
 
@@ -166,21 +197,16 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # Apontamos manualmente as variaveis do VCPKG para o OPUS/VPX (32-bits)
+        # AJUDA O MAGNUM-OPUS A ACHAR O VCPKG
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
-        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
         
-        # Configuração do Sodium (Manual C:\sodium)
-        $env:SODIUM_LIB_DIR = "C:\sodium\lib"
-        $env:SODIUM_SHARED = "false"
+        # --- SODIUM BUNDLED ---
+        # Flags especificas para o target i686:
+        # -L native=C:\libs_x86\lib  -> Onde está o sodium.lib 32-bits
         
-        # AQUI ESTA O TRUQUE PARA EVITAR O ERRO DE LINKER:
-        # Passamos as flags APENAS para o target i686 (32-bits)
-        # O build script (x64) nao vai ver isso e vai rodar sem erro.
-        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\sodium\lib -l static=libsodium"
+        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\libs_x86\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
