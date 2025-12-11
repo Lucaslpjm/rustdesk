@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Robust)
+name: Build Saurus Legacy (Final Stable)
 
 on:
   workflow_dispatch:
@@ -10,8 +10,7 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      # Definimos o triplet padrao para 32-bits para o VCPKG (Opus/VPX)
-      VCPKG_DEFAULT_TRIPLET: x86-windows-static
+      # Não definimos Triplet global para não travar o Host x64
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -30,43 +29,36 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (COM RETRY AUTOMATICO) ---
-    - name: Install Dependencies (VCPKG x86)
+    # --- SETUP LIBSODIUM 32-BIT MANUAL (C:\sodium) ---
+    - name: Setup Libsodium (Manual 32-bit)
       shell: powershell
       run: |
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-        .\bootstrap-vcpkg.bat
-        .\vcpkg integrate install
+        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
+        $Zip = "libsodium.zip"
         
-        # Loop de tentativa para evitar erro de rede (503)
-        $maxRetries = 3
-        $retryCount = 0
-        $success = $false
+        Write-Host "Baixando Libsodium..."
+        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
         
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                Write-Host "Tentativa de instalacao VCPKG ($($retryCount + 1)/$maxRetries)..."
-                # Instala APENAS midia. SEM libsodium (vamos usar bundled)
-                .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
-                $success = $true
-            } catch {
-                Write-Warning "Falha no VCPKG. Retentando em 10s..."
-                Start-Sleep -Seconds 10
-                $retryCount++
-            }
-        }
+        if (!(Test-Path $Zip)) { Write-Error "Download falhou"; exit 1 }
         
-        if (-not $success) {
-            Write-Error "Falha critica ao instalar dependencias do VCPKG apos $maxRetries tentativas."
-            exit 1
-        }
-        Write-Host "Dependencias VCPKG instaladas com sucesso!"
+        Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
+        
+        $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
+        $IncSource = "libsodium_install\libsodium\include"
+        
+        New-Item -ItemType Directory -Force -Path "C:\sodium\lib"
+        New-Item -ItemType Directory -Force -Path "C:\sodium\include"
+        
+        # Copia com os dois nomes para garantir
+        Copy-Item $LibSource "C:\sodium\lib\libsodium.lib" -Force
+        Copy-Item $LibSource "C:\sodium\lib\sodium.lib" -Force
+        Copy-Item "$IncSource\*" "C:\sodium\include" -Recurse -Force
+        
+        Write-Host "Libsodium 32-bits pronto em C:\sodium"
 
     - name: Inject Server Configuration
       shell: powershell
       run: |
-        Write-Host "Injetando Servidor Saurus..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
@@ -98,9 +90,111 @@ jobs:
                 else:
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
+    # --- RECURSOS (SINTAXE CORRIGIDA E EXPANDIDA) ---
     - name: Ensure Resources Exist
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
-        if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
-        else { & curl.exe -L -o icon.ico "
+        
+        if ($icon) {
+            Write-Host "Icone encontrado localmente."
+            Copy-Item $icon.FullName -Destination ".\icon.ico" -Force 
+        } else {
+            Write-Host "Baixando icone do repositorio..."
+            & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
+        }
+
+        $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
+        
+        if ($manifest) {
+            Write-Host "Manifesto encontrado localmente."
+            Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force 
+        } else {
+            Write-Host "Baixando manifesto do repositorio..."
+            & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
+        }
+
+    - name: Fix Resource Paths in build.rs
+      shell: powershell
+      run: |
+        $BuildRs = "build.rs"
+        $AbsPath = (Get-Location).Path.Replace("\", "\\")
+        $content = Get-Content $BuildRs -Raw
+        $content = $content.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
+        $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
+        Set-Content -Path $BuildRs -Value $content -Encoding UTF8
+
+    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
+    - name: Install Dependencies (VCPKG x86)
+      run: |
+        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
+        cd C:\vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg integrate install
+        # Instalamos Opus/VPX/YUV. (Sodium não, pois usaremos o manual)
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+      shell: powershell
+
+    # --- DOWNLOAD SCITER (FIX BAD IMAGE - VIA ZIP) ---
+    - name: Download Sciter DLL (Safe Zip)
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "target\release"
+        
+        # Baixa o ZIP de um commit antigo (2021) que temos certeza que funciona
+        $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
+        
+        Write-Host "Baixando Sciter SDK (Commit 2021)..."
+        & curl.exe -L -o sciter.zip $ZipUrl --retry 5
+        
+        Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
+        
+        # Caminho da DLL 32-bits dentro do ZIP extraido
+        $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
+        
+        if (Test-Path $DllSource) {
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter 32-bit restaurada com sucesso!"
+        } else {
+            Write-Error "DLL Sciter nao encontrada no ZIP."
+            exit 1
+        }
+
+    # --- BUILD FINAL ---
+    - name: Build Legacy
+      run: |
+        $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
+        
+        # Apontamos manualmente as variaveis do VCPKG para o OPUS/VPX (32-bits)
+        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
+        $env:OPUS_STATIC = "1"
+        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
+        
+        # Configuração do Sodium (Manual C:\sodium)
+        $env:SODIUM_LIB_DIR = "C:\sodium\lib"
+        $env:SODIUM_SHARED = "false"
+        
+        # AQUI ESTA O TRUQUE PARA EVITAR O ERRO DE LINKER:
+        # Passamos as flags APENAS para o target i686 (32-bits)
+        # O build script (x64) nao vai ver isso e vai rodar sem erro.
+        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\sodium\lib -l static=libsodium"
+        
+        cargo build --target i686-pc-windows-msvc --release --features inline
+      shell: powershell
+
+    - name: Package Legacy
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
+        Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
+        Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
+        Write-Host "Pacote Legacy Criado!"
+
+    - name: Upload Legacy
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saurus-Remote-Legacy-32bit
+        path: Saurus_Legacy_32bit
