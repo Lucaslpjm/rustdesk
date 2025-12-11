@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v3)
+name: Build Saurus Legacy (32-bit Dec 2021)
 
 on:
   workflow_dispatch:
@@ -29,52 +29,54 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (COM RETRY AUTOMÁTICO) ---
-    - name: Install Dependencies (VCPKG x86)
+    # --- SETUP FERRAMENTAS (CHOCO) ---
+    # Instalamos NASM e YASM por fora para o VCPKG nao tentar baixar e falhar
+    - name: Install Build Tools
+      run: choco install nasm yasm -y
+
+    # --- SETUP VCPKG (VERSÃO 2021) ---
+    - name: Install Dependencies (VCPKG 2021)
       shell: powershell
       run: |
-        $ErrorActionPreference = "Stop"
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-
-        # Bootstrap com Retry
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-                if (Test-Path "vcpkg.exe") { $success = $true }
-            } catch { Start-Sleep -Seconds 10; $retryCount++ }
-        }
+        if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
         
-        # Instalação com Retry
+        Write-Host "Clonando VCPKG..."
+        git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+        cd C:\vcpkg
+        
+        # COMMIT DE DEZEMBRO 2021 (Compativel com RustDesk 1.1.9 e sem erro de pkgconf)
+        Write-Host "Voltando no tempo (Dez 2021)..."
+        git -c advice.detachedHead=false checkout e437016b8015eb6b321c17296068222d10335013
+        
+        # Bootstrap
+        Write-Host "Bootstrap..."
+        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
-        $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                Write-Host "Tentativa VCPKG $($retryCount+1)..."
-                # Instala apenas midia. Sodium vai manual.
-                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                if ($LASTEXITCODE -eq 0) { $success = $true } else { throw "Erro VCPKG" }
-            } catch { Start-Sleep -Seconds 15; $retryCount++ }
-        }
+        
+        # Instala Libs (Com VCPKG_USE_SYSTEM_BINARIES para usar o NASM do Choco)
+        $env:VCPKG_USE_SYSTEM_BINARIES = "1"
+        
+        Write-Host "Instalando bibliotecas..."
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+        
+        Write-Host "VCPKG 2021 configurado!"
 
     # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
-    - name: Setup Official Libsodium (32-bit Isolated)
+    - name: Setup Libsodium (Manual 32-bit)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
         & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
-        
-        if (!(Test-Path $Zip)) { throw "Download Libsodium falhou" }
+        if (!(Test-Path $Zip)) { throw "Download falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
         
-        $Lib = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
-        Copy-Item $Lib "C:\libs_x86\lib\libsodium.lib" -Force
-        Copy-Item $Lib "C:\libs_x86\lib\sodium.lib" -Force
+        $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
+        Copy-Item $LibSource "C:\libs_x86\lib\libsodium.lib" -Force
+        Copy-Item $LibSource "C:\libs_x86\lib\sodium.lib" -Force
         Copy-Item "libsodium_install\libsodium\include\*" "C:\libs_x86\include" -Recurse -Force
 
     - name: Inject Server Configuration
@@ -114,10 +116,10 @@ jobs:
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
-        if ($icon) { Copy-Item $icon.FullName ".\icon.ico" -Force } 
+        if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
         else { & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3 }
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
-        if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
+        if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
     - name: Fix Resource Paths in build.rs
@@ -130,34 +132,16 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- DOWNLOAD SCITER DLL (CORREÇÃO ZIP E SEARCH) ---
-    - name: Download Sciter DLL (Zip Search Strategy)
+    # --- DOWNLOAD SCITER (FIXED ZIP 2021) ---
+    - name: Download Sciter DLL (Safe Zip)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
-        $WorkDir = "sciter_extract"
-        New-Item -ItemType Directory -Force -Path $WorkDir
-        
-        # URL do ZIP do commit especifico de 2021
         $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
-        
-        Write-Host "Baixando ZIP do Sciter..."
-        & curl.exe -L -o sciter.zip $ZipUrl --retry 5 --retry-connrefused
-        
-        if ((Get-Item "sciter.zip").Length -lt 1000) { throw "ZIP Sciter corrompido" }
-        
-        Write-Host "Extraindo..."
-        Expand-Archive -Path "sciter.zip" -DestinationPath $WorkDir -Force
-        
-        # PROCURA INTELIGENTE: Acha o arquivo sciter.dll que esteja numa pasta x32
-        $DllFound = Get-ChildItem -Path $WorkDir -Recurse -Filter "sciter.dll" | Where-Object { $_.FullName -match "x32" } | Select-Object -First 1
-        
-        if ($DllFound) {
-            Write-Host "DLL Encontrada: $($DllFound.FullName)"
-            Copy-Item $DllFound.FullName "target\release\sciter.dll" -Force
-        } else {
-            throw "ERRO FATAL: sciter.dll 32-bits nao encontrada no ZIP."
-        }
+        & curl.exe -L -o sciter.zip $ZipUrl --retry 5
+        Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
+        $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
+        if (Test-Path $DllSource) { Copy-Item $DllSource "target\release\sciter.dll" -Force }
 
     # --- BUILD FINAL ---
     - name: Build Legacy
@@ -165,18 +149,16 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # VCPKG Manual configs
+        # OPUS Manual (VCPKG 2021)
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
-        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
         
-        # Sodium Manual
+        # SODIUM Manual (Nossa pasta isolada)
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags de Target (Onde acontece a magica da linkagem)
+        # Flags para o TARGET i686 (32-bits)
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
