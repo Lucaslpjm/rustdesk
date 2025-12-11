@@ -10,7 +10,8 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      # REMOVIDO: VCPKG_DEFAULT_TRIPLET global (Deixamos cada um decidir o seu)
+      # VCPKG default for 32-bits (For Opus/VPX)
+      VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -28,21 +29,6 @@ jobs:
 
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
-
-    # --- INSTALAÇÃO DEPENDENCIAS (VCPKG MISTO) ---
-    - name: Install Dependencies (VCPKG x86 + x64)
-      run: |
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-        .\bootstrap-vcpkg.bat
-        .\vcpkg integrate install
-        
-        # 1. Instala libs 32-bits (TARGET) - SEM Sodium aqui para nao conflitar
-        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
-        
-        # 2. Instala libs 64-bits (HOST) - COM Sodium para o build script usar se precisar
-        .\vcpkg install libsodium:x64-windows-static
-      shell: powershell
 
     # --- SETUP LIBSODIUM 32-BIT MANUAL (ISOLADO) ---
     - name: Setup Official Libsodium (32-bit Isolated)
@@ -125,32 +111,45 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
+    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
+    - name: Install Dependencies (VCPKG x86)
+      run: |
+        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
+        cd C:\vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg integrate install
+        # Instalamos Opus, VPX e YUV. NÃO instalamos Sodium aqui.
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
+      shell: powershell
+
     - name: Download Sciter DLL
       shell: cmd
       run: |
         if not exist "target\release" mkdir target\release
         curl.exe -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
 
-    # --- BUILD FINAL (ISOLAMENTO TOTAL) ---
+    # --- BUILD FINAL (SEM VARIÁVEIS GLOBAIS DE SODIUM) ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # FIX OPUS (Aponta manual para VCPKG 32-bits)
-        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
-        $env:OPUS_STATIC = "1"
+        # --- A CORREÇÃO ESTÁ AQUI ---
+        # Definimos SODIUM_LIB_DIR *apenas* para este comando específico, não globalmente.
+        # Mas como o Windows não permite "VAR=VAL comando" fácil no PowerShell,
+        # usamos o truque de definir as flags no RUSTFLAGS específico do target.
         
-        # FIX SODIUM (Aponta para nossa pasta isolada)
-        $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
-        $env:SODIUM_SHARED = "false"
-        
-        # --- AQUI ESTA O SEGREDO ---
-        # 1. RUSTFLAGS GLOBAL: Vazio ou padrao (para o script x64 rodar feliz)
-        # 2. RUSTFLAGS ESPECIFICO DO TARGET (i686): Injeta as bibliotecas 32-bits
+        # Flags especificas para o target i686 (32-bits):
+        # 1. crt-static: Para tudo ser estatico
+        # 2. native=...: Adiciona VCPKG (para Opus/VPX) e nossa pasta C:\libs_x86\lib
+        # 3. static=sodium: Força linkagem do sodium manual
         
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
+        
+        # IMPORTANTE: Definimos as variaveis do Sodium APENAS para o build final
+        # Mas para garantir que o build script nao as veja, definimos elas "inline" no comando não dá no powershell facilmente.
+        # Entao vamos confiar que sem as variaveis globais, o build script compile o dele,
+        # e o nosso target flag force o uso da lib manual para o final.
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
