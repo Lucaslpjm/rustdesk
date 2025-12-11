@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final)
+name: Build Saurus Legacy (32-bit Final Fix)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,6 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      # VCPKG default for 32-bits (For Opus/VPX)
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
@@ -111,45 +110,43 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
+    # --- INSTALAÇÃO DEPENDENCIAS VCPKG ---
     - name: Install Dependencies (VCPKG x86)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
-        # Instalamos Opus, VPX e YUV. NÃO instalamos Sodium aqui.
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    - name: Download Sciter DLL
+    # --- CORREÇÃO DA DLL (TIME MACHINE) ---
+    - name: Download Sciter DLL (Fixed Commit)
       shell: cmd
       run: |
         if not exist "target\release" mkdir target\release
-        curl.exe -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll
+        
+        echo Baixando DLL historica de 2021...
+        :: Este hash aponta para a versao exata que funcionava com o RustDesk 1.1.9
+        curl.exe -L -o target\release\sciter.dll "https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll" --retry 5
 
-    # --- BUILD FINAL (SEM VARIÁVEIS GLOBAIS DE SODIUM) ---
+    # --- BUILD FINAL ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # --- A CORREÇÃO ESTÁ AQUI ---
-        # Definimos SODIUM_LIB_DIR *apenas* para este comando específico, não globalmente.
-        # Mas como o Windows não permite "VAR=VAL comando" fácil no PowerShell,
-        # usamos o truque de definir as flags no RUSTFLAGS específico do target.
+        # FIX OPUS
+        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
+        $env:OPUS_STATIC = "1"
         
-        # Flags especificas para o target i686 (32-bits):
-        # 1. crt-static: Para tudo ser estatico
-        # 2. native=...: Adiciona VCPKG (para Opus/VPX) e nossa pasta C:\libs_x86\lib
-        # 3. static=sodium: Força linkagem do sodium manual
+        # FIX SODIUM
+        $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
+        $env:SODIUM_SHARED = "false"
         
+        # TARGET FLAGS (32-bit only)
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
-        
-        # IMPORTANTE: Definimos as variaveis do Sodium APENAS para o build final
-        # Mas para garantir que o build script nao as veja, definimos elas "inline" no comando não dá no powershell facilmente.
-        # Entao vamos confiar que sem as variaveis globais, o build script compile o dele,
-        # e o nosso target flag force o uso da lib manual para o final.
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
