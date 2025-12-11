@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit No-VCPKG)
+name: Build Saurus Legacy (32-bit Final Direct)
 
 on:
   workflow_dispatch:
@@ -35,6 +35,9 @@ jobs:
         $Zip = "libsodium.zip"
         Write-Host "Baixando Libsodium..."
         & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
+        
+        if ((Get-Item $Zip).Length -lt 1000) { throw "Arquivo libsodium.zip muito pequeno/corrompido" }
+
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
         New-Item -ItemType Directory -Force -Path "C:\libs\sodium\lib"
@@ -43,19 +46,14 @@ jobs:
         $LibSrc = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         Copy-Item $LibSrc "C:\libs\sodium\lib\sodium.lib" -Force
         Copy-Item "libsodium_install\libsodium\include\*" "C:\libs\sodium\include" -Recurse -Force
+        Write-Host "Libsodium OK."
 
-    # --- SETUP VCPKG MINIMO (APENAS SE NECESSÁRIO, MAS EVITANDO ERROS) ---
-    # Vamos tentar compilar SEM instalar as libs de multimidia pelo VCPKG
-    # O RustDesk 1.1.9 usa o crate 'scrap' que as vezes compila o proprio codigo
-    # Se falhar, voltamos, mas vamos tentar o caminho limpo primeiro.
-    
     - name: Inject Server Configuration
       shell: powershell
       run: |
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
-        
         if (Test-Path $ConfigFile) {
            $content = Get-Content $ConfigFile -Raw
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
@@ -103,34 +101,41 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- DOWNLOAD SCITER (VERSÃO 2021 BLINDADA) ---
-    - name: Download Sciter DLL (Safe Zip)
+    # --- DOWNLOAD SCITER DLL (DIRETO E CORRETO) ---
+    - name: Download Sciter DLL (Direct)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
-        $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
-        Write-Host "Baixando Sciter SDK..."
-        & curl.exe -L -o sciter.zip $ZipUrl --retry 5
-        Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
-        $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
-        if (Test-Path $DllSource) { Copy-Item $DllSource "target\release\sciter.dll" -Force } 
-        else { Write-Error "DLL Sciter nao encontrada"; exit 1 }
+        
+        # URL Direta para o arquivo no commit de 2021 (raw)
+        # Isso evita baixar o ZIP e evita erros de "Bad Image" com versao errada
+        $DllUrl = "https://raw.githubusercontent.com/c-smile/sciter-sdk/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll"
+        
+        Write-Host "Baixando sciter.dll (Raw Direct)..."
+        & curl.exe -L -o target\release\sciter.dll $DllUrl --retry 5 --retry-connrefused
+        
+        # Validação de Segurança
+        $size = (Get-Item "target\release\sciter.dll").Length
+        Write-Host "Tamanho do arquivo baixado: $size bytes"
+        
+        if ($size -lt 2000000) { 
+            # Se for menor que 2MB, provavelmente é um erro HTML (404) ou arquivo corrompido
+            Get-Content "target\release\sciter.dll" -TotalCount 5
+            Write-Error "FALHA: O arquivo sciter.dll está corrompido ou é inválido."
+            exit 1 
+        }
 
-    # --- BUILD FINAL (SEM VCPKG) ---
+    # --- BUILD FINAL ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-        
-        # Configuracao Sodium Manual
         $env:SODIUM_LIB_DIR = "C:\libs\sodium\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags para linkagem manual
+        # Flags para usar nossas libs manuais e ignorar VCPKG que está com erro
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\libs\sodium\lib -l static=sodium"
         
-        # Tenta compilar. Se der erro de falta de libvpx/opus, o cargo vai avisar
-        # mas removemos a dependencia do VCPKG instavel.
-        
+        # Tentamos compilar sem VCPKG. O Rust vai baixar o fallback das libs multimidia se precisar.
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
