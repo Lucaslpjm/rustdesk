@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Robust v2)
+name: Build Saurus Legacy (32-bit Stable)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
+      # Triplet para dependencias (Opus/VPX/YUV)
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
@@ -29,65 +30,30 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (COM LOOP DE RETENTATIVA NA INSTALAÇÃO) ---
-    - name: Install Dependencies (VCPKG x86 Only - Robust)
+    # --- SETUP VCPKG (TRAVADO EM 2023 PARA ESTABILIDADE) ---
+    - name: Install Dependencies (VCPKG x86 - Stable History)
       shell: powershell
       run: |
-        # Configura para parar em erro
-        $ErrorActionPreference = "Stop"
-
-        # 1. Clone/Update
+        # 1. Clone
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
-
-        # 2. Bootstrap (Compilar o vcpkg.exe)
-        $maxRetries = 5
-        $retryCount = 0
-        $success = $false
         
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                Write-Host "Bootstrap VCPKG (Tentativa $($retryCount + 1))..."
-                cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-                if (Test-Path "vcpkg.exe") { $success = $true } else { throw "vcpkg.exe ausente" }
-            } catch {
-                Write-Warning "Erro no Bootstrap. Retentando em 10s..."
-                Start-Sleep -Seconds 10
-                $retryCount++
-            }
-        }
-        if (-not $success) { Write-Error "Falha Fatal no Bootstrap"; exit 1 }
-
-        # 3. Instalar Libs (AQUI FOI O ERRO ANTERIOR - AGORA COM RETRY)
+        # 2. TIME MACHINE: Reverte para um commit estavel de Outubro/2023
+        # Isso evita o erro de download do 'pkgconf' que esta quebrado na versao de hoje
+        Write-Host "Revertendo VCPKG para versao estavel (2023)..."
+        git checkout 5b12166318356973eb70a927d2c1809074d284f6
+        
+        # 3. Bootstrap
+        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
         
-        $retryCount = 0
-        $success = $false
+        # 4. Instala Libs (Sem libsodium, que faremos manual)
+        Write-Host "Instalando bibliotecas de midia..."
+        .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
         
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                Write-Host "Instalando Libs via VCPKG (Tentativa $($retryCount + 1))..."
-                # Executa instalação. Se der erro 503, o catch pega (devido ao $ErrorActionPreference ou verificação de exit code)
-                
-                # Usamos cmd /c e verificamos $LASTEXITCODE para garantir
-                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                
-                if ($LASTEXITCODE -eq 0) {
-                    $success = $true
-                    Write-Host "Bibliotecas instaladas com sucesso!"
-                } else {
-                    throw "VCPKG retornou erro"
-                }
-            } catch {
-                Write-Warning "Erro ao baixar pacotes (Provavel 503). Retentando em 15s..."
-                Start-Sleep -Seconds 15
-                $retryCount++
-            }
-        }
-        
-        if (-not $success) { Write-Error "Falha Fatal ao instalar libs do VCPKG"; exit 1 }
+        Write-Host "VCPKG concluido com sucesso!"
 
-    # --- SETUP LIBSODIUM MANUAL (CURL ROBUSTO) ---
+    # --- SETUP LIBSODIUM MANUAL (CURL) ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -104,6 +70,7 @@ jobs:
         $LibSource = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         $IncSource = "libsodium_install\libsodium\include"
         
+        # Pasta Isolada para nao confundir o VCPKG ou Host
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
         
@@ -111,11 +78,12 @@ jobs:
         Copy-Item $LibSource "C:\libs_x86\lib\sodium.lib" -Force
         Copy-Item "$IncSource\*" "C:\libs_x86\include" -Recurse -Force
         
-        Write-Host "Libsodium OK em C:\libs_x86"
+        Write-Host "Libsodium manual OK em C:\libs_x86"
 
     - name: Inject Server Configuration
       shell: powershell
       run: |
+        Write-Host "Injetando Servidor Saurus..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
@@ -151,11 +119,20 @@ jobs:
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
-        if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
-        else { & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 5 }
+        
+        if ($icon) {
+            Copy-Item $icon.FullName -Destination ".\icon.ico" -Force 
+        } else {
+            & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
+        }
+
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
-        if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
-        else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 5 }
+        
+        if ($manifest) {
+            Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force 
+        } else {
+            & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
+        }
 
     - name: Fix Resource Paths in build.rs
       shell: powershell
@@ -167,21 +144,29 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
+    # --- DOWNLOAD SCITER (VERSÃO ANTIGA CORRETA) ---
     - name: Download Sciter DLL (Safe Zip)
       shell: powershell
       run: |
-        if (Test-Path "target\release\sciter.dll") { Remove-Item "target\release\sciter.dll" }
         New-Item -ItemType Directory -Force -Path "target\release"
+        
+        # Baixa ZIP de 2021 (Garantia de 32-bits compativel)
         $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
         
-        Write-Host "Baixando Sciter..."
+        Write-Host "Baixando Sciter SDK (2021)..."
         & curl.exe -L -o sciter.zip $ZipUrl --retry 5
         
         Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
+        
         $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
         
-        if (Test-Path $DllSource) { Copy-Item $DllSource "target\release\sciter.dll" -Force } 
-        else { Write-Error "DLL Sciter nao encontrada"; exit 1 }
+        if (Test-Path $DllSource) {
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter instalada."
+        } else {
+            Write-Error "ERRO: DLL Sciter nao encontrada."
+            exit 1
+        }
 
     # --- BUILD FINAL ---
     - name: Build Legacy
@@ -189,18 +174,21 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # Variaveis MANUAIS para o VCPKG (Opus/VPX)
+        # OPUS Manual (Aponta para VCPKG antigo que instalamos)
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
-        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
         
-        # Variaveis MANUAIS para o Sodium
+        # SODIUM (Ignora VCPKG, usa Manual)
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags para o TARGET FINAL
+        # FLAGS DO TARGET (A MÁGICA):
+        # 1. crt-static: Tudo em um EXE só
+        # 2. -L native=...vcpkg...: Acha Opus/VPX
+        # 3. -L native=...libs_x86...: Acha Sodium
+        # 4. -l static=libsodium: Linka Sodium na marra
+        
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
