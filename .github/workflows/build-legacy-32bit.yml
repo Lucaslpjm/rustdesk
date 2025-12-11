@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Stable 2023)
+name: Build Saurus Legacy (32-bit Jan 2024)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      # Triplet padrão para VCPKG (Opus/VPX)
+      # Triplet padrão para VCPKG
       VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
@@ -30,11 +30,11 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (VERSÃO 2023 GOLD) ---
-    - name: Install Dependencies (VCPKG x86 - Retro)
+    # --- SETUP VCPKG (JANEIRO 2024 - SWEET SPOT) ---
+    - name: Install Dependencies (VCPKG x86 - Jan 2024)
       shell: powershell
       run: |
-        # 1. Limpa instalações anteriores para garantir
+        # 1. Limpa instalações anteriores
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
         
         # 2. Clona o VCPKG
@@ -42,21 +42,21 @@ jobs:
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         
-        # 3. TIME MACHINE CORRIGIDA:
-        # Usamos uma TAG oficial de 2023 (mais estável) e forçamos o checkout
-        Write-Host "Voltando para Abril/2023..."
-        git -c advice.detachedHead=false checkout 2023.04.15
+        # 3. CHECKOUT JANEIRO 2024
+        # Esse commit é conhecido por ser estável e ter links válidos
+        Write-Host "Ajustando VCPKG para Jan/2024..."
+        git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
         
-        # 4. Bootstrap e Instalação
+        # 4. Bootstrap
         Write-Host "Compilando VCPKG..."
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
         
+        # 5. Instala Libs (Com tratamento de erro simples)
         Write-Host "Instalando bibliotecas..."
-        # Nessa versão de 2023, não precisamos de tools complexas que dão erro 503
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
         
-        Write-Host "VCPKG 2023 Configurado com Sucesso!"
+        Write-Host "VCPKG Configurado com Sucesso!"
 
     # --- SETUP LIBSODIUM MANUAL ---
     - name: Setup Official Libsodium (32-bit Isolated)
@@ -87,6 +87,7 @@ jobs:
     - name: Inject Server Configuration
       shell: powershell
       run: |
+        Write-Host "Injetando Servidor Saurus..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
@@ -122,11 +123,20 @@ jobs:
       shell: powershell
       run: |
         $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
-        if ($icon) { Copy-Item $icon.FullName -Destination ".\icon.ico" -Force } 
-        else { & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3 }
+        
+        if ($icon) {
+            Copy-Item $icon.FullName -Destination ".\icon.ico" -Force 
+        } else {
+            & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
+        }
+
         $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
-        if ($manifest) { Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force } 
-        else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
+        
+        if ($manifest) {
+            Copy-Item $manifest.FullName -Destination ".\manifest.xml" -Force 
+        } else {
+            & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
+        }
 
     - name: Fix Resource Paths in build.rs
       shell: powershell
@@ -143,13 +153,24 @@ jobs:
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
+        
+        # ZIP 2021 (32-bits garantido)
         $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
+        
         Write-Host "Baixando Sciter SDK..."
         & curl.exe -L -o sciter.zip $ZipUrl --retry 5
+        
         Expand-Archive -Path sciter.zip -DestinationPath "sciter_temp" -Force
+        
         $DllSource = "sciter_temp\sciter-sdk-3636f3306d64998797e937d57bc8382da493026d\bin.win\x32\sciter.dll"
-        if (Test-Path $DllSource) { Copy-Item $DllSource "target\release\sciter.dll" -Force } 
-        else { Write-Error "DLL Sciter nao encontrada"; exit 1 }
+        
+        if (Test-Path $DllSource) {
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter instalada."
+        } else {
+            Write-Error "ERRO: DLL Sciter nao encontrada."
+            exit 1
+        }
 
     # --- BUILD FINAL ---
     - name: Build Legacy
@@ -157,7 +178,7 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # Variáveis MANUAIS para o VCPKG 2023 (Opus/VPX)
+        # Variáveis MANUAIS para o VCPKG (Jan 2024)
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
