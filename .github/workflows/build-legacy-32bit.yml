@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Fix)
+name: Build Saurus Legacy (32-bit Final Robust)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      VCPKG_DEFAULT_TRIPLET: x86-windows-static
+      # NÃO definimos VCPKG_DEFAULT_TRIPLET globalmente para não confundir o Host (x64)
 
     steps:
     - name: Checkout Legacy Code (1.1.9)
@@ -110,43 +110,50 @@ jobs:
         $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         Set-Content -Path $BuildRs -Value $content -Encoding UTF8
 
-    # --- INSTALAÇÃO DEPENDENCIAS VCPKG ---
-    - name: Install Dependencies (VCPKG x86)
+    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG (REDUZIDA) ---
+    - name: Install Dependencies (VCPKG x86 Only)
       run: |
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
         .\bootstrap-vcpkg.bat
         .\vcpkg integrate install
+        
+        # REMOVIDO LIBSODIUM: Evita erro de download do 'pkgconf' e conflito de arquitetura.
+        # O build script vai compilar o dele e nós usaremos o manual para o final.
         .\vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static
       shell: powershell
 
-    # --- CORREÇÃO DA DLL (TIME MACHINE) ---
-    - name: Download Sciter DLL (Fixed Commit)
+    - name: Download Sciter DLL
       shell: cmd
       run: |
         if not exist "target\release" mkdir target\release
-        
-        echo Baixando DLL historica de 2021...
-        :: Este hash aponta para a versao exata que funcionava com o RustDesk 1.1.9
-        curl.exe -L -o target\release\sciter.dll "https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll" --retry 5
+        :: Link especifico da versao 32-bits de 2021 (Anti Bad Image)
+        curl.exe -L -o target\release\sciter.dll https://github.com/c-smile/sciter-sdk/raw/3636f3306d64998797e937d57bc8382da493026d/bin.win/x32/sciter.dll --retry 5
 
-    # --- BUILD FINAL ---
+    # --- BUILD FINAL (TARGET CONFIGURADO) ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # FIX OPUS
+        # --- CONFIGURAÇÃO MANUAL DE MÍDIA (OPUS/VPX) ---
+        # Como removemos o VCPKG global, apontamos manualmente para o Opus/VPX acharem as libs x86
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
         
-        # FIX SODIUM
-        $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
-        $env:SODIUM_SHARED = "false"
+        # --- CONFIGURAÇÃO MANUAL DE CRIPTOGRAFIA (SODIUM) ---
+        # 1. build.rs (Host/x64): Não acha SODIUM_LIB_DIR global, então compila do zero (Correto).
+        # 2. rustdesk.exe (Target/x86): Acha a flag abaixo e usa nossa lib manual.
         
-        # TARGET FLAGS (32-bit only)
+        # Flags especificas para o target i686:
+        # -L native=C:\libs_x86\lib  -> Onde está o sodium.lib 32-bits
+        # -L native=...vcpkg...      -> Onde estão opus.lib/vpx.lib 32-bits
+        
         $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
+        
+        # IMPORTANTE: Desativamos variaveis globais de sodium para não poluir o host
+        # $env:SODIUM_LIB_DIR = ... (REMOVIDO)
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
