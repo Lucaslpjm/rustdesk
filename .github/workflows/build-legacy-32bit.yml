@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Bulletproof)
+name: Build Saurus Legacy (32-bit Final Fix Choco)
 
 on:
   workflow_dispatch:
@@ -10,10 +10,9 @@ jobs:
     env:
       RUSTDESK_API_SERVER: ""
       VCPKG_ROOT: "C:\\vcpkg"
-      # Não definimos triplet global para evitar confusão no host
+      VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
     steps:
-    # 1. Baixar Código Fonte
     - name: Checkout Legacy Code (1.1.9)
       uses: actions/checkout@v4
       with:
@@ -21,19 +20,21 @@ jobs:
         ref: 1.1.9
         submodules: recursive
 
-    # 2. Configurar Rust 1.65 (Compatível com código de 2021)
-    - name: Setup Rust
+    - name: Setup Rust (1.65.0)
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # 3. Instalar Ferramentas Básicas
-    - name: Install Build Tools
-      run: choco install llvm nasm yasm --version 12.0.0 --allow-downgrade -y
+    # --- CORREÇÃO AQUI: INSTALAÇÃO SEPARADA ---
+    - name: Install Legacy LLVM (v12.0.0)
+      run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # 4. Instalar Dependências VCPKG (Opus, VPX, YUV) - Com Retry Loop
-    - name: Install VCPKG Dependencies (Robust)
+    - name: Install Assemblers (NASM/YASM Latest)
+      run: choco install nasm yasm -y
+
+    # --- SETUP VCPKG (COM RETRY AUTOMÁTICO) ---
+    - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
@@ -41,116 +42,71 @@ jobs:
         # Clone
         if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
         cd C:\vcpkg
-        
-        # Bootstrap
-        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-        .\vcpkg integrate install
-        
-        # Loop de Instalação (5 tentativas)
-        $maxRetries = 5
-        $retryCount = 0
-        $success = $false
-        
+
+        # Bootstrap com Retry
+        $maxRetries = 5; $retryCount = 0; $success = $false
         while (-not $success -and $retryCount -lt $maxRetries) {
             try {
-                Write-Host "Tentativa de instalacao VCPKG ($($retryCount + 1)/$maxRetries)..."
-                # Instala apenas midia. Libsodium instalaremos manualmente para evitar conflito.
+                cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+                if (Test-Path "vcpkg.exe") { $success = $true }
+            } catch { Start-Sleep -Seconds 10; $retryCount++ }
+        }
+        
+        # Instalação com Retry
+        .\vcpkg integrate install
+        $retryCount = 0; $success = $false
+        while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+                Write-Host "Tentativa VCPKG $($retryCount+1)..."
+                # Instala apenas midia. Sodium vai manual.
                 cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                
-                if ($LASTEXITCODE -eq 0) {
-                    $success = $true
-                    Write-Host "Sucesso no VCPKG!"
-                } else { throw "Erro no VCPKG" }
-            } catch {
-                Write-Warning "Falha no download/build. Retentando em 15s..."
-                Start-Sleep -Seconds 15
-                $retryCount++
-            }
+                if ($LASTEXITCODE -eq 0) { $success = $true } else { throw "Erro VCPKG" }
+            } catch { Start-Sleep -Seconds 15; $retryCount++ }
         }
         if (-not $success) { throw "Falha Fatal VCPKG" }
 
-    # 5. Instalar Libsodium Manualmente (Isolamento x86)
-    - name: Setup Libsodium (Manual 32-bit)
+    # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
+    - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
-        
-        # Download com Curl e Retry
         & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
         
-        if (!(Test-Path $Zip)) { throw "Erro no download do Libsodium" }
-        
+        if (!(Test-Path $Zip)) { throw "Download Libsodium falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
-        # Cria pasta isolada
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
         
-        # Copia a lib estatica 32-bits
-        $Src = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
-        Copy-Item $Src "C:\libs_x86\lib\libsodium.lib" -Force
-        Copy-Item $Src "C:\libs_x86\lib\sodium.lib" -Force
+        $Lib = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
+        Copy-Item $Lib "C:\libs_x86\lib\libsodium.lib" -Force
+        Copy-Item $Lib "C:\libs_x86\lib\sodium.lib" -Force
         Copy-Item "libsodium_install\libsodium\include\*" "C:\libs_x86\include" -Recurse -Force
-        
-        Write-Host "Libsodium manual OK em C:\libs_x86"
 
-    # 6. Baixar Sciter DLL (Via Git - Infalível)
-    - name: Download Sciter DLL (Git Method)
+    - name: Inject Server Configuration
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "target\release"
-        
-        if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
-        
-        Write-Host "Clonando repositorio Sciter..."
-        git clone https://github.com/c-smile/sciter-sdk.git sciter_repo
-        
-        cd sciter_repo
-        # Checkout no commit de Setembro 2021 (Compativel com RustDesk 1.1.9)
-        Write-Host "Restaurando versao 2021..."
-        git checkout 3636f3306d64998797e937d57bc8382da493026d
-        cd ..
-        
-        $DllPath = "sciter_repo\bin.win\x32\sciter.dll"
-        if (Test-Path $DllPath) {
-            Copy-Item $DllPath "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter 32-bit restaurada com sucesso!"
-        } else {
-            throw "DLL nao encontrada no repositorio clonado!"
-        }
-
-    # 7. Configurar Código (Servidor, Icones, Python UI)
-    - name: Configure Codebase
-      shell: powershell
-      run: |
-        # Injeta Servidor Saurus
         $ConfigFile = "libs/hbb_common/src/config.rs"
         $SeuIP = "20.195.216.23:443"
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
         
         if (Test-Path $ConfigFile) {
-           $c = Get-Content $ConfigFile -Raw
-           $c = $c -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
-           $c = $c -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
-           # Fix de Lock
-           $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
-           Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
+           $content = Get-Content $ConfigFile -Raw
+           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
+           $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
+           Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
         }
 
-        # Baixa Icones (Com Curl)
-        & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3
-        & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3
-        
-        # Ajusta caminhos no build.rs
-        $BuildRs = "build.rs"
-        $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        $c = Get-Content $BuildRs -Raw
-        $c = $c.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
-        $c = $c.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
-        Set-Content -Path $BuildRs -Value $c -Encoding UTF8
+    - name: Fix Legacy Code Logic (Locks)
+      shell: powershell
+      run: |
+        $ConfigFile = "libs\hbb_common\src\config.rs"
+        $content = Get-Content $ConfigFile -Raw
+        $content = $content -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
+        Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
 
-    - name: Generate Inline UI (Python)
+    - name: Generate Inline UI Assets
       shell: python
       run: |
         import os
@@ -162,33 +118,75 @@ jobs:
                 else:
                     f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
 
-    # 8. BUILD FINAL (AQUI A MAGICA ACONTECE)
+    - name: Ensure Resources Exist
+      shell: powershell
+      run: |
+        $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
+        if ($icon) { Copy-Item $icon.FullName ".\icon.ico" -Force } 
+        else { & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3 }
+        $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
+        if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
+        else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
+
+    - name: Fix Resource Paths in build.rs
+      shell: powershell
+      run: |
+        $BuildRs = "build.rs"
+        $AbsPath = (Get-Location).Path.Replace("\", "\\")
+        $content = Get-Content $BuildRs -Raw
+        $content = $content.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
+        $content = $content.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
+        
+        # --- MODIFICAÇÃO NO BUILD.RS (CORREÇÃO LNK4272/LNK1120) ---
+        # Injeta instrucao de linkagem direta no codigo fonte do build script
+        $ExtraLink = "`nprintln!(`"cargo:rustc-link-search=native=C:\\libs_x86\\lib`");`nprintln!(`"cargo:rustc-link-lib=static=sodium`");`n"
+        $content = $content + $ExtraLink
+        
+        Set-Content -Path $BuildRs -Value $content -Encoding UTF8
+
+    # --- DOWNLOAD SCITER DLL (MÉTODO GIT CLONE - INFALÍVEL) ---
+    - name: Download Sciter DLL (Git Method)
+      shell: powershell
+      run: |
+        if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
+        Write-Host "Clonando Sciter SDK..."
+        git clone https://github.com/c-smile/sciter-sdk.git sciter_repo
+        
+        cd sciter_repo
+        Write-Host "Voltando para 2021..."
+        git checkout 3636f3306d64998797e937d57bc8382da493026d
+        cd ..
+        
+        New-Item -ItemType Directory -Force -Path "target\release"
+        $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
+        
+        if (Test-Path $DllSource) {
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter (32-bit 2021) obtida via Git!"
+        } else {
+            throw "ERRO: sciter.dll nao encontrada apos clone."
+        }
+
+    # --- BUILD FINAL ---
     - name: Build Legacy
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # Configurações Manuais do VCPKG (Opus/VPX)
+        # Variáveis MANUAIS para o VCPKG (Opus/VPX)
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
         $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
         
-        # Configuração Manual do Sodium (Ignora VCPKG)
+        # Config Sodium (Manual)
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # TARGET FLAGS (O Segredo):
-        # Essas flags SÓ são aplicadas quando o Rust compila o "rustdesk.exe" (32-bits).
-        # O script de build (64-bits) não vê essas flags e não tenta linkar a lib errada.
-        # - crt-static: Garante que tudo vai dentro do EXE.
-        # - L native: Adiciona os caminhos das nossas libs manuais e do VCPKG.
-        # - l static=sodium: Força o uso da nossa libsodium manual.
+        # Flags especificas
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
-        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
-        
-        Write-Host "Iniciando compilacao..."
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
@@ -198,7 +196,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
         Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
         Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
-        Write-Host "Pacote Legacy Criado com Sucesso!"
+        Write-Host "Pacote Legacy Criado!"
 
     - name: Upload Legacy
       uses: actions/upload-artifact@v4
