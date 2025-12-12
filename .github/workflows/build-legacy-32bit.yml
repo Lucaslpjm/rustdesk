@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Surgical)
+name: Build Saurus Legacy (32-bit Final Zip)
 
 on:
   workflow_dispatch:
@@ -29,40 +29,14 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (ROBUSTO) ---
-    - name: Install Dependencies (VCPKG x86)
-      shell: powershell
-      run: |
-        $ErrorActionPreference = "Stop"
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-
-        # Bootstrap Loop
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-                if (Test-Path "vcpkg.exe") { $success = $true }
-            } catch { Start-Sleep 10; $retryCount++ }
-        }
-        
-        # Install Loop
-        .\vcpkg integrate install
-        $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                if ($LASTEXITCODE -eq 0) { $success = $true }
-            } catch { Start-Sleep 15; $retryCount++ }
-        }
-        if (-not $success) { throw "Falha VCPKG" }
-
     # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
+        
+        Write-Host "Baixando Libsodium..."
         & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
         
         if (!(Test-Path $Zip)) { throw "Download Libsodium falhou" }
@@ -128,40 +102,62 @@ jobs:
         $c = $c.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
         $c = $c.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         
-        # Linkagem forçada no código
+        # Linkagem forçada no código (Evita erro LNK4272 e LNK1120)
         $LinkFix = "`nprintln!(`"cargo:rustc-link-search=native=C:\\libs_x86\\lib`");`nprintln!(`"cargo:rustc-link-lib=static=sodium`");`n"
         $c = $c + $LinkFix
         Set-Content -Path $BuildRs -Value $c -Encoding UTF8
 
-    # --- DOWNLOAD SCITER DLL (MÉTODO GIT FETCH CIRÚRGICO) ---
-    - name: Download Sciter DLL (Surgical Fetch)
+    # --- INSTALAÇÃO VCPKG (Jan 2024 - Estável) ---
+    - name: Install Dependencies (VCPKG x86)
+      shell: powershell
+      run: |
+        # Limpa cache antigo que pode estar corrompido
+        if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
+        
+        Write-Host "Clonando VCPKG..."
+        git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+        cd C:\vcpkg
+        
+        # Checkout Jan 2024 (Evita erro 503 e 404)
+        git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
+        
+        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+        .\vcpkg integrate install
+        
+        Write-Host "Instalando bibliotecas..."
+        cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
+        
+        if ($LASTEXITCODE -ne 0) { throw "Falha VCPKG" }
+        Write-Host "VCPKG OK"
+
+    # --- DOWNLOAD SCITER DLL (MÉTODO ZIP ARCHIVE - CORREÇÃO FINAL) ---
+    - name: Download Sciter DLL (Archive Zip)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
         
-        if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
-        New-Item -ItemType Directory -Force -Path "sciter_repo"
-        cd sciter_repo
+        # URL do Arquivo ZIP do commit de 2021
+        # O Github gera esse zip dinamicamente. Usamos curl -L para seguir o link.
+        $ZipUrl = "https://github.com/c-smile/sciter-sdk/archive/3636f3306d64998797e937d57bc8382da493026d.zip"
+        $OutZip = "sciter_archive.zip"
         
-        Write-Host "Inicializando Git..."
-        git init
-        git remote add origin https://github.com/c-smile/sciter-sdk.git
+        Write-Host "Baixando Arquivo ZIP do Commit..."
+        & curl.exe -L -o $OutZip $ZipUrl --retry 5 --retry-connrefused --connect-timeout 60
         
-        Write-Host "Buscando commit especifico (Set 2021)..."
-        # Busca APENAS o commit que precisamos, sem o histórico pesado
-        git fetch origin 3636f3306d64998797e937d57bc8382da493026d --depth 1
+        # Valida tamanho (> 1MB)
+        if ((Get-Item $OutZip).Length -lt 1000000) { throw "ZIP Sciter invalido/corrompido" }
         
-        if ($LASTEXITCODE -ne 0) { throw "Falha no git fetch" }
+        Expand-Archive -Path $OutZip -DestinationPath "sciter_extract" -Force
         
-        git checkout FETCH_HEAD
-        cd ..
+        # Procura a DLL 32-bits na estrutura extraida
+        # A pasta geralmente tem o nome do commit
+        $DllFound = Get-ChildItem -Path "sciter_extract" -Recurse -Filter "sciter.dll" | Where-Object { $_.FullName -match "bin.win\\x32" } | Select-Object -First 1
         
-        $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
-        if (Test-Path $DllSource) {
-            Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter restaurada com sucesso!"
+        if ($DllFound) {
+            Copy-Item $DllFound.FullName "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter 32-bit (2021) restaurada com sucesso!"
         } else {
-            throw "ERRO FATAL: sciter.dll nao encontrada."
+            throw "ERRO FATAL: sciter.dll 32-bits nao encontrada dentro do ZIP."
         }
 
     # --- BUILD FINAL ---
@@ -170,7 +166,7 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # VCPKG Manual configs
+        # VCPKG Manual
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
@@ -181,8 +177,8 @@ jobs:
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags
-        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
+        # Flag estatica
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
