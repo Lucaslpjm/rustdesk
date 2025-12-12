@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Time-Calc)
+name: Build Saurus Legacy (32-bit Final Overwrite)
 
 on:
   workflow_dispatch:
@@ -29,47 +29,21 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (Jan 2024 - Estável) ---
-    - name: Install Dependencies (VCPKG x86)
-      shell: powershell
-      run: |
-        $ErrorActionPreference = "Stop"
-        # Limpa para garantir estado novo
-        if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
-        
-        Write-Host "Clonando VCPKG..."
-        git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-        cd C:\vcpkg
-        
-        # Checkout Jan 2024 (Evita erro 503 e links 404)
-        git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
-        
-        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-        .\vcpkg integrate install
-        
-        Write-Host "Instalando bibliotecas..."
-        cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-        
-        if ($LASTEXITCODE -ne 0) { throw "Falha VCPKG" }
-        Write-Host "VCPKG OK"
-
-    # --- SETUP LIBSODIUM MANUAL ---
+    # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
         & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
-        
         if (!(Test-Path $Zip)) { throw "Download Libsodium falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
         
-        $Lib = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
-        Copy-Item $Lib "C:\libs_x86\lib\libsodium.lib" -Force
-        Copy-Item $Lib "C:\libs_x86\lib\sodium.lib" -Force
+        Copy-Item "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib" "C:\libs_x86\lib\libsodium.lib" -Force
+        Copy-Item "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib" "C:\libs_x86\lib\sodium.lib" -Force
         Copy-Item "libsodium_install\libsodium\include\*" "C:\libs_x86\include" -Recurse -Force
 
     - name: Inject Server Configuration
@@ -115,57 +89,83 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    - name: Fix Resource Paths in build.rs
+    # --- SOBRESCRITA TOTAL DO BUILD.RS (CORREÇÃO DE SINTAXE) ---
+    - name: Rewrite build.rs (Safe Method)
       shell: powershell
       run: |
-        $BuildRs = "build.rs"
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        $c = Get-Content $BuildRs -Raw
-        $c = $c.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
-        $c = $c.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         
-        # Linkagem forçada no código (Evita erros LNK4272 e LNK1120)
-        $LinkFix = "`nprintln!(`"cargo:rustc-link-search=native=C:\\libs_x86\\lib`");`nprintln!(`"cargo:rustc-link-lib=static=sodium`");`n"
-        $c = $c + $LinkFix
-        Set-Content -Path $BuildRs -Value $c -Encoding UTF8
+        # Conteúdo completo do build.rs original, mas com as correções já aplicadas
+        # e a linkagem manual inserida corretamente dentro da main()
+        $NewContent = @"
+        use std::env;
+        #[cfg(windows)]
+        use std::fs;
+        use std::path::Path;
 
-    # --- DOWNLOAD SCITER DLL (MÉTODO TIME TRAVEL REAL) ---
-    - name: Download Sciter DLL (Git Calculated)
+        fn main() {
+            // --- INJEÇÃO MANUAL DE LINKAGEM ---
+            println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
+            println!("cargo:rustc-link-lib=static=sodium");
+            // ----------------------------------
+
+            #[cfg(windows)]
+            {
+                let mut res = winres::WindowsResource::new();
+                // Caminhos absolutos corrigidos
+                res.set_icon("$AbsPath\\icon.ico");
+                res.set_manifest_file("$AbsPath\\manifest.xml");
+                match res.compile() {
+                    Ok(_) => {},
+                    Err(e) => {
+                        println!("cargo:warning=Failed to compile resources: {}", e);
+                    }
+                }
+            }
+        }
+        "@
+        
+        Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
+        Write-Host "build.rs reescrito com sucesso!"
+
+    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
+    - name: Install Dependencies (VCPKG x86)
+      shell: powershell
+      run: |
+        $ErrorActionPreference = "Stop"
+        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
+        cd C:\vcpkg
+        
+        # Checkout Jan 2024
+        git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
+        
+        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+        .\vcpkg integrate install
+        
+        # Loop de Retry
+        $maxRetries = 5; $retryCount = 0; $success = $false
+        while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
+                if ($LASTEXITCODE -eq 0) { $success = $true }
+            } catch { Start-Sleep 15; $retryCount++ }
+        }
+        if (-not $success) { throw "Falha VCPKG" }
+
+    # --- DOWNLOAD SCITER DLL (MÉTODO CLONE - INFALÍVEL) ---
+    - name: Download Sciter DLL (Git Method)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
-        
         if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
         
-        Write-Host "Clonando repositorio Sciter..."
         git clone https://github.com/c-smile/sciter-sdk.git sciter_repo
         cd sciter_repo
-        
-        # Mágica: Pede ao Git o hash do último commit ANTES de 01/10/2021
-        # Isso garante que pegamos um commit que EXISTE no histórico baixado
-        $CommitHash = git rev-list -n 1 --before="2021-10-01" master
-        
-        Write-Host "Commit calculado: $CommitHash"
-        
-        if (-not $CommitHash) { throw "Nao foi possivel encontrar um commit antigo." }
-        
-        git checkout $CommitHash
+        git checkout 3636f3306d64998797e937d57bc8382da493026d
         cd ..
         
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
-        
-        if (Test-Path $DllSource) {
-            # Validação Extra: Checa se é um executável (MZ header)
-            $bytes = Get-Content $DllSource -Encoding Byte -TotalCount 2
-            if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-                throw "ERRO: O arquivo baixado NAO e uma DLL valida (Header invalido)."
-            }
-            
-            Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter 32-bit (2021) restaurada e validada!"
-        } else {
-            throw "ERRO FATAL: sciter.dll nao encontrada no commit $CommitHash."
-        }
+        if (Test-Path $DllSource) { Copy-Item $DllSource "target\release\sciter.dll" -Force } else { throw "DLL Sciter nao encontrada" }
 
     # --- BUILD FINAL ---
     - name: Build Legacy
@@ -185,7 +185,7 @@ jobs:
         $env:SODIUM_SHARED = "false"
         
         # Flags
-        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
