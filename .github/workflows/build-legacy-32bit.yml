@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Git Clone)
+name: Build Saurus Legacy (32-bit Final TimeTravel)
 
 on:
   workflow_dispatch:
@@ -29,15 +29,18 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP VCPKG (JANEIRO 2024 - ESTÁVEL) ---
+    # --- SETUP VCPKG (Jan 2024 - O que funcionou nos seus logs) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
+        $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
+        
+        Write-Host "Clonando VCPKG..."
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         
-        # Checkout Jan 2024 (Evita erro 503 e links quebrados)
+        # Checkout Jan 2024 (Estavel e sem erro 503/404)
         git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
         
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
@@ -47,9 +50,8 @@ jobs:
         cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
         
         if ($LASTEXITCODE -ne 0) { throw "Falha VCPKG" }
-        Write-Host "VCPKG OK"
 
-    # --- SETUP LIBSODIUM MANUAL ---
+    # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -120,35 +122,39 @@ jobs:
         $c = $c.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
         $c = $c.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         
-        # Linkagem forçada no código (Evita erros LNK)
+        # Linkagem forçada no código (Evita erros LNK4272 e LNK1120)
         $LinkFix = "`nprintln!(`"cargo:rustc-link-search=native=C:\\libs_x86\\lib`");`nprintln!(`"cargo:rustc-link-lib=static=sodium`");`n"
         $c = $c + $LinkFix
         Set-Content -Path $BuildRs -Value $c -Encoding UTF8
 
-    # --- DOWNLOAD SCITER DLL (FULL CLONE) ---
-    - name: Download Sciter DLL (Full Clone Method)
+    # --- DOWNLOAD SCITER DLL (MÉTODO DATA HISTÓRICA) ---
+    - name: Download Sciter DLL (History Search)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
         
         if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
         
-        Write-Host "Clonando repositorio completo do Sciter (Lento mas seguro)..."
-        # Sem --depth 1, baixamos tudo para garantir que o commit existe
+        Write-Host "Clonando repositorio Sciter..."
         git clone https://github.com/c-smile/sciter-sdk.git sciter_repo
-        
         cd sciter_repo
-        Write-Host "Checkout no commit de 2021..."
-        git checkout 3636f3306d64998797e937d57bc8382da493026d
+        
+        # AQUI ESTA A MAGICA: Pega o hash do ultimo commit antes de Out 2021
+        # Isso garante uma versao valida, mesmo que o hash antigo tenha sumido
+        Write-Host "Calculando commit historico (Set 2021)..."
+        $CommitHash = git rev-list -n 1 --before="2021-10-01" master
+        
+        Write-Host "Voltando para commit: $CommitHash"
+        git checkout $CommitHash
+        
         cd ..
         
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
-        
         if (Test-Path $DllSource) {
             Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter (32-bit) restaurada com sucesso!"
+            Write-Host "DLL Sciter restaurada com sucesso!"
         } else {
-            throw "ERRO FATAL: sciter.dll nao encontrada apos clone."
+            throw "ERRO FATAL: sciter.dll nao encontrada."
         }
 
     # --- BUILD FINAL ---
