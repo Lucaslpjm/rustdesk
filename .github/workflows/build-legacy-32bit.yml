@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Syntax Fix)
+name: Build Saurus Legacy (32-bit Final Time-Calc)
 
 on:
   workflow_dispatch:
@@ -29,21 +29,37 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
+    # --- SETUP VCPKG (Jan 2024 - Estável) ---
+    - name: Install Dependencies (VCPKG x86)
+      shell: powershell
+      run: |
+        $ErrorActionPreference = "Stop"
+        # Limpa para garantir estado novo
+        if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
+        
+        Write-Host "Clonando VCPKG..."
+        git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+        cd C:\vcpkg
+        
+        # Checkout Jan 2024 (Evita erro 503 e links 404)
+        git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
+        
+        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+        .\vcpkg integrate install
+        
+        Write-Host "Instalando bibliotecas..."
+        cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
+        
+        if ($LASTEXITCODE -ne 0) { throw "Falha VCPKG" }
+        Write-Host "VCPKG OK"
+
+    # --- SETUP LIBSODIUM MANUAL ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
-        
-        # Retry loop para download do Sodium
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
-                if (Test-Path $Zip) { $success = $true }
-            } catch { Start-Sleep 5; $retryCount++ }
-        }
+        & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
         
         if (!(Test-Path $Zip)) { throw "Download Libsodium falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
@@ -99,75 +115,57 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    - name: Fix Resource Paths in build.rs (SYNTAX FIXED)
+    - name: Fix Resource Paths in build.rs
       shell: powershell
       run: |
         $BuildRs = "build.rs"
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
         $c = Get-Content $BuildRs -Raw
-        
-        # 1. Corrige caminhos do Icone/Manifest
         $c = $c.Replace('"icon.ico"', "`"$AbsPath\\icon.ico`"")
         $c = $c.Replace('"manifest.xml"', "`"$AbsPath\\manifest.xml`"")
         
-        # 2. INJEÇÃO DE LINKAGEM (CORRETA)
-        # Em vez de adicionar no final, substituimos a declaração da main
-        # para inserir o código DENTRO da função.
-        $Injection = "fn main() {`n    println!(`"cargo:rustc-link-search=native=C:\\libs_x86\\lib`");`n    println!(`"cargo:rustc-link-lib=static=sodium`");"
-        $c = $c.Replace("fn main() {", $Injection)
-        
+        # Linkagem forçada no código (Evita erros LNK4272 e LNK1120)
+        $LinkFix = "`nprintln!(`"cargo:rustc-link-search=native=C:\\libs_x86\\lib`");`nprintln!(`"cargo:rustc-link-lib=static=sodium`");`n"
+        $c = $c + $LinkFix
         Set-Content -Path $BuildRs -Value $c -Encoding UTF8
-        Write-Host "build.rs corrigido e injetado com sucesso."
 
-    # --- INSTALAÇÃO DEPENDÊNCIAS VCPKG ---
-    - name: Install Dependencies (VCPKG x86)
-      shell: powershell
-      run: |
-        $ErrorActionPreference = "Stop"
-        if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-        cd C:\vcpkg
-
-        # Bootstrap Loop
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-                if (Test-Path "vcpkg.exe") { $success = $true }
-            } catch { Start-Sleep 10; $retryCount++ }
-        }
-        
-        # Install Loop
-        .\vcpkg integrate install
-        $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                if ($LASTEXITCODE -eq 0) { $success = $true }
-            } catch { Start-Sleep 15; $retryCount++ }
-        }
-        if (-not $success) { throw "Falha VCPKG" }
-
-    # --- DOWNLOAD SCITER DLL (MÉTODO GIT CLONE - INFALÍVEL) ---
-    - name: Download Sciter DLL (Git Method)
+    # --- DOWNLOAD SCITER DLL (MÉTODO TIME TRAVEL REAL) ---
+    - name: Download Sciter DLL (Git Calculated)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
+        
         if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
         
-        Write-Host "Clonando Sciter SDK..."
-        # Clona TUDO (sem depth) para garantir que o commit existe
+        Write-Host "Clonando repositorio Sciter..."
         git clone https://github.com/c-smile/sciter-sdk.git sciter_repo
-        
         cd sciter_repo
-        Write-Host "Checkout commit 2021..."
-        git checkout 3636f3306d64998797e937d57bc8382da493026d
+        
+        # Mágica: Pede ao Git o hash do último commit ANTES de 01/10/2021
+        # Isso garante que pegamos um commit que EXISTE no histórico baixado
+        $CommitHash = git rev-list -n 1 --before="2021-10-01" master
+        
+        Write-Host "Commit calculado: $CommitHash"
+        
+        if (-not $CommitHash) { throw "Nao foi possivel encontrar um commit antigo." }
+        
+        git checkout $CommitHash
         cd ..
         
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
+        
         if (Test-Path $DllSource) {
+            # Validação Extra: Checa se é um executável (MZ header)
+            $bytes = Get-Content $DllSource -Encoding Byte -TotalCount 2
+            if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+                throw "ERRO: O arquivo baixado NAO e uma DLL valida (Header invalido)."
+            }
+            
             Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter restaurada!"
-        } else { throw "DLL Sciter nao encontrada." }
+            Write-Host "DLL Sciter 32-bit (2021) restaurada e validada!"
+        } else {
+            throw "ERRO FATAL: sciter.dll nao encontrada no commit $CommitHash."
+        }
 
     # --- BUILD FINAL ---
     - name: Build Legacy
@@ -186,8 +184,8 @@ jobs:
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags (Apenas crt-static, pois a linkagem já está no build.rs)
-        $env:RUSTFLAGS = "-C target-feature=+crt-static"
+        # Flags
+        $env:CARGO_TARGET_I686_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static -L native=C:\vcpkg\installed\x86-windows-static\lib -L native=C:\libs_x86\lib -l static=libsodium"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
