@@ -29,7 +29,7 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM MANUAL (C:\libs_x86) ---
+    # --- SETUP LIBSODIUM MANUAL ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -104,8 +104,8 @@ jobs:
       run: |
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
         
-        # Este script agora compila explicitamente src/platform/windows.cc
-        # para resolver os simbolos faltantes (_handleMask, etc.)
+        # O build.rs agora vai compilar src/platform/windows.cc
+        # Isso gera as funcoes _handleMask, _drawOutline, etc.
         
         $NewContent = @"
         use std::env;
@@ -114,39 +114,46 @@ jobs:
         use std::path::Path;
 
         fn main() {
-            // 1. COMPILAÇÃO C++ (Resolve LNK1120)
-            #[cfg(windows)]
-            {
-                let mut build = cc::Build::new();
-                build.file("src/platform/windows.cc");
-                build.compile("windows_glue");
-                println!("cargo:rustc-link-lib=static=windows_glue");
-            }
-
-            // 2. LINKAGEM MANUAL SODIUM
+            // 1. LINKAGEM MANUAL SODIUM (32-bit)
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
-            // 3. VERSÃO
-            let out_dir = env::var("OUT_DIR").unwrap();
-            let dest_path = Path::new(&out_dir).join("version.rs");
-            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
-            let mut f = File::create("src/version.rs").unwrap();
-            f.write_all(version_code.as_bytes()).unwrap();
-
-            // 4. RECURSOS
+            // 2. COMPILAÇÃO C++ (Resolve as 9 unresolved externals)
             #[cfg(windows)]
             {
+                let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+                let cc_path = Path::new(&manifest_dir).join("src").join("platform").join("windows.cc");
+                
+                if cc_path.exists() {
+                    println!("cargo:warning=Compilando glue C++: {:?}", cc_path);
+                    cc::Build::new()
+                        .file(cc_path)
+                        .cpp(true)
+                        .compile("bridge"); // Gera bridge.lib
+                    println!("cargo:rustc-link-lib=static=bridge");
+                } else {
+                    println!("cargo:warning=AVISO: windows.cc nao encontrado em {:?}", cc_path);
+                }
+
+                // Configura Icone/Manifest
                 let mut res = winres::WindowsResource::new();
                 res.set_icon("$AbsPath\\icon.ico");
                 res.set_manifest_file("$AbsPath\\manifest.xml");
-                match res.compile() {
-                    Ok(_) => {},
-                    Err(e) => {
-                        println!("cargo:warning=Failed to compile resources: {}", e);
-                    }
+                if let Err(e) = res.compile() {
+                    println!("cargo:warning=Resource compile error: {}", e);
                 }
             }
+
+            // 3. GERAÇÃO DE VERSÃO
+            let out_dir = env::var("OUT_DIR").unwrap();
+            // Gera arquivo para OUT_DIR (padrao cargo)
+            let dest_path = Path::new(&out_dir).join("version.rs");
+            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
+            let mut f = File::create(&dest_path).unwrap();
+            f.write_all(version_code.as_bytes()).unwrap();
+            
+            // Gera arquivo para src/version.rs (para o codigo achar)
+            let _ = std::fs::write("src/version.rs", version_code);
         }
         "@
         
@@ -194,18 +201,15 @@ jobs:
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
         
-        # VCPKG Manual configs
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
         $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
         
-        # Sodium Manual
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
         
-        # Flags
         $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
