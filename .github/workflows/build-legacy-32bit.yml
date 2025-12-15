@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Production v13)
+name: Build Saurus Legacy (32-bit Final Fix v14)
 
 on:
   workflow_dispatch:
@@ -35,7 +35,6 @@ jobs:
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
         $Zip = "libsodium.zip"
-        
         $maxRetries = 5; $retryCount = 0; $success = $false
         while (-not $success -and $retryCount -lt $maxRetries) {
             try {
@@ -43,7 +42,6 @@ jobs:
                 if ((Get-Item $Zip).Length -gt 1000) { $success = $true }
             } catch { Start-Sleep 5; $retryCount++ }
         }
-        
         if (-not $success) { throw "Download Libsodium falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
         
@@ -98,14 +96,14 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- REWRITE BUILD.RS (CORREÇÃO FINAL: COMPILAÇÃO C++ + LINKAGEM) ---
-    - name: Rewrite build.rs (Full Logic + C++ Compile)
+    # --- REWRITE BUILD.RS (CORREÇÃO DE CAMINHO C++) ---
+    - name: Rewrite build.rs (Correct Path)
       shell: powershell
       run: |
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
         
-        # O build.rs agora vai compilar src/platform/windows.cc
-        # Isso gera as funcoes _handleMask, _drawOutline, etc.
+        # O problema era o caminho. Vamos usar 'src/platform/windows.cc' relativo ao Cargo.toml
+        # E garantir que ele ache o arquivo.
         
         $NewContent = @"
         use std::env;
@@ -114,28 +112,34 @@ jobs:
         use std::path::Path;
 
         fn main() {
-            // 1. LINKAGEM MANUAL SODIUM (32-bit)
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
-            // 2. COMPILAÇÃO C++ (Resolve as 9 unresolved externals)
             #[cfg(windows)]
             {
-                let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-                let cc_path = Path::new(&manifest_dir).join("src").join("platform").join("windows.cc");
+                // Correção: Caminho simples relativo
+                let cc_path = "src/platform/windows.cc";
                 
-                if cc_path.exists() {
-                    println!("cargo:warning=Compilando glue C++: {:?}", cc_path);
+                // Checagem de existencia (para debug no log do github)
+                if std::path::Path::new(cc_path).exists() {
+                    println!("cargo:warning=Encontrado windows.cc, compilando...");
                     cc::Build::new()
                         .file(cc_path)
                         .cpp(true)
-                        .compile("bridge"); // Gera bridge.lib
+                        .compile("bridge");
                     println!("cargo:rustc-link-lib=static=bridge");
                 } else {
-                    println!("cargo:warning=AVISO: windows.cc nao encontrado em {:?}", cc_path);
+                    println!("cargo:warning=ERRO CRITICO: windows.cc nao encontrado em src/platform/windows.cc");
+                    // Tenta listar o diretorio para debug
+                    if let Ok(entries) = std::fs::read_dir("src/platform") {
+                        for entry in entries {
+                            if let Ok(entry) = entry {
+                                println!("cargo:warning=Arquivo encontrado: {:?}", entry.path());
+                            }
+                        }
+                    }
                 }
 
-                // Configura Icone/Manifest
                 let mut res = winres::WindowsResource::new();
                 res.set_icon("$AbsPath\\icon.ico");
                 res.set_manifest_file("$AbsPath\\manifest.xml");
@@ -144,21 +148,16 @@ jobs:
                 }
             }
 
-            // 3. GERAÇÃO DE VERSÃO
             let out_dir = env::var("OUT_DIR").unwrap();
-            // Gera arquivo para OUT_DIR (padrao cargo)
             let dest_path = Path::new(&out_dir).join("version.rs");
             let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
-            let mut f = File::create(&dest_path).unwrap();
+            let mut f = File::create("src/version.rs").unwrap();
             f.write_all(version_code.as_bytes()).unwrap();
-            
-            // Gera arquivo para src/version.rs (para o codigo achar)
-            let _ = std::fs::write("src/version.rs", version_code);
         }
         "@
         
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
-        Write-Host "build.rs reescrito com suporte total a C++!"
+        Write-Host "build.rs atualizado."
 
     # --- INSTALAÇÃO VCPKG ---
     - name: Install Dependencies (VCPKG x86)
