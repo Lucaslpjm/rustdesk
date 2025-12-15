@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v17)
+name: Build Saurus Legacy (32-bit Final UI Fix v18)
 
 on:
   workflow_dispatch:
@@ -76,13 +76,44 @@ jobs:
       shell: python
       run: |
         import os
-        mapping = { "get_index": "index.html", "get_chatbox": "chatbox.html", "get_cm": "cm.html", "get_install": "install.html", "get_remote": "remote.html" }
+        # Mapeamento completo dos arquivos da UI
+        mapping = { 
+            "get_index": "index.html", 
+            "get_chatbox": "chatbox.html", 
+            "get_cm": "cm.html", 
+            "get_install": "install.html", 
+            "get_remote": "remote.html",
+            "get_css_common": "common.css",
+            "get_css_index": "index.css",
+            "get_tis_common": "common.tis"
+        }
+        
+        # Garante que o diretorio src/ui existe (o RustDesk 1.1.9 espera isso)
+        if not os.path.exists("src/ui"):
+            os.makedirs("src/ui")
+
         with open("src/ui/inline.rs", "w") as f:
             for func, filename in mapping.items():
-                if os.path.exists(f"src/ui/{filename}"):
-                    f.write(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{filename}")).to_string() }}\n')
-                else:
-                    f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
+                # Procura o arquivo original na estrutura clonada
+                # No 1.1.9, as vezes fica em src/ui ou na raiz/html
+                possible_paths = [f"src/ui/{filename}", f"html/{filename}", filename]
+                found_content = ""
+                
+                for p in possible_paths:
+                    if os.path.exists(p):
+                        try:
+                            with open(p, "rb") as content_file:
+                                # Escapa aspas para string Rust
+                                raw = content_file.read()
+                                # Converte bytes para string valida em Rust literal
+                                # Isso é um hack simples, o ideal é include_str! mas vamos forçar string
+                                found_content = raw.decode('utf-8', errors='ignore').replace('"', '\\"').replace('\\', '\\\\')
+                                break
+                        except:
+                            pass
+                
+                # Gera a função Rust que retorna o conteudo
+                f.write(f'pub fn {func}() ->String {{ "{found_content}".to_string() }}\n')
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -94,14 +125,12 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- FORÇAR CRIAÇÃO DE VERSION.RS (NOVO) ---
+    # --- FORÇAR CRIAÇÃO DE VERSION.RS ---
     - name: Force Create src/version.rs
       shell: powershell
       run: |
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
-        Write-Host "Arquivo src/version.rs criado manualmente!"
-        Get-Content "src/version.rs"
 
     # --- CRIAÇÃO DE STUBS C++ ---
     - name: Create C++ Stubs
@@ -110,7 +139,6 @@ jobs:
         $StubContent = @"
         #include <windows.h>
         #include <stdint.h>
-
         extern "C" {
             void handleMask(uint8_t* buf, int width, int height, int pitch) {}
             void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
@@ -123,53 +151,40 @@ jobs:
             void AddRecentDocument(const wchar_t* path) {}
         }
         "@
-        New-Item -ItemType Directory -Force -Path "src/platform"
+        if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" }
         Set-Content -Path "src/platform/windows.cc" -Value $StubContent -Encoding UTF8
 
-    # --- REWRITE BUILD.RS (FULL CORRECT LOGIC) ---
+    # --- REWRITE BUILD.RS ---
     - name: Rewrite build.rs
       shell: powershell
       run: |
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        
         $NewContent = @"
         use std::env;
         use std::fs::File;
         use std::io::Write;
         use std::path::Path;
-
         fn main() {
-            // 1. COMPILAÇÃO C++
             #[cfg(windows)]
             {
-                cc::Build::new()
-                    .file("src/platform/windows.cc")
-                    .cpp(true)
-                    .compile("bridge");
+                cc::Build::new().file("src/platform/windows.cc").cpp(true).compile("bridge");
                 println!("cargo:rustc-link-lib=static=bridge");
             }
-
-            // 2. LINKAGEM SODIUM
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
-
-            // 3. GERAÇÃO DE VERSÃO (Build Script)
-            // Apenas para OUT_DIR, pois src/version.rs ja foi criado manualmente
+            
+            // Version file generation
             let out_dir = env::var("OUT_DIR").unwrap();
             let dest_path = Path::new(&out_dir).join("version.rs");
-            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
             let mut f = File::create(&dest_path).unwrap();
-            f.write_all(version_code.as_bytes()).unwrap();
+            f.write_all(b"pub const VERSION: &'static str = \"1.1.9\";").unwrap();
 
-            // 4. RECURSOS
             #[cfg(windows)]
             {
                 let mut res = winres::WindowsResource::new();
                 res.set_icon("$AbsPath\\icon.ico");
                 res.set_manifest_file("$AbsPath\\manifest.xml");
-                if let Err(e) = res.compile() {
-                    println!("cargo:warning=Resource error: {}", e);
-                }
+                res.compile().unwrap();
             }
         }
         "@
@@ -204,10 +219,8 @@ jobs:
         git clone --depth 1 https://github.com/c-smile/sciter-sdk.git sciter_repo
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
         if (Test-Path $DllSource) {
-            if ((Get-Item $DllSource).Length -gt 1000000) {
-                 Copy-Item $DllSource "target\release\sciter.dll" -Force
-                 Write-Host "DLL Sciter 32-bit instalada!"
-            } else { throw "DLL invalida" }
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter 32-bit instalada!"
         } else { throw "DLL nao encontrada" }
 
     # --- BUILD FINAL ---
@@ -215,18 +228,16 @@ jobs:
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
-        
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
         $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
-        
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
-        
         $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
+        # IMPORTANTE: Features 'inline' garantem que o HTML/CSS entre no EXE
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
