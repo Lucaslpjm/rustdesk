@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Fix v16)
+name: Build Saurus Legacy (32-bit Final v17)
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM MANUAL ---
+    # --- SETUP LIBSODIUM ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -44,10 +44,8 @@ jobs:
         }
         if (-not $success) { throw "Download Libsodium falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
-        
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
-        
         $Lib = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         Copy-Item $Lib "C:\libs_x86\lib\libsodium.lib" -Force
         Copy-Item $Lib "C:\libs_x86\lib\sodium.lib" -Force
@@ -96,7 +94,16 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- CRIAÇÃO DE STUBS C++ (FIXED) ---
+    # --- FORÇAR CRIAÇÃO DE VERSION.RS (NOVO) ---
+    - name: Force Create src/version.rs
+      shell: powershell
+      run: |
+        $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
+        Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
+        Write-Host "Arquivo src/version.rs criado manualmente!"
+        Get-Content "src/version.rs"
+
+    # --- CRIAÇÃO DE STUBS C++ ---
     - name: Create C++ Stubs
       shell: powershell
       run: |
@@ -132,7 +139,7 @@ jobs:
         use std::path::Path;
 
         fn main() {
-            // 1. LINKAGEM C++ (Stubs)
+            // 1. COMPILAÇÃO C++
             #[cfg(windows)]
             {
                 cc::Build::new()
@@ -146,24 +153,13 @@ jobs:
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
-            // 3. GERAÇÃO DE VERSÃO (FIXED)
-            // Escreve TANTO no OUT_DIR quanto no src/version.rs para garantir compatibilidade
-            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
-            
-            // Metodo 1: OUT_DIR (Padrao moderno)
+            // 3. GERAÇÃO DE VERSÃO (Build Script)
+            // Apenas para OUT_DIR, pois src/version.rs ja foi criado manualmente
             let out_dir = env::var("OUT_DIR").unwrap();
             let dest_path = Path::new(&out_dir).join("version.rs");
+            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
             let mut f = File::create(&dest_path).unwrap();
             f.write_all(version_code.as_bytes()).unwrap();
-            
-            // Metodo 2: src/version.rs (Padrao antigo, necessario para mod version;)
-            // Usamos std::fs diretamente para escrever no codigo fonte
-            let src_version = Path::new("src").join("version.rs");
-            if let Ok(mut f_src) = File::create(&src_version) {
-                 f_src.write_all(version_code.as_bytes()).unwrap();
-            } else {
-                 println!("cargo:warning=Nao foi possivel escrever src/version.rs");
-            }
 
             // 4. RECURSOS
             #[cfg(windows)]
