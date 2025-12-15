@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Stub v15)
+name: Build Saurus Legacy (32-bit Final Fix v16)
 
 on:
   workflow_dispatch:
@@ -96,13 +96,10 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- CRIAÇÃO DE STUBS C++ (A SALVAÇÃO) ---
+    # --- CRIAÇÃO DE STUBS C++ (FIXED) ---
     - name: Create C++ Stubs
       shell: powershell
       run: |
-        # Cria o arquivo windows.cc que estava faltando com implementações vazias
-        # para satisfazer o linker.
-        
         $StubContent = @"
         #include <windows.h>
         #include <stdint.h>
@@ -119,12 +116,10 @@ jobs:
             void AddRecentDocument(const wchar_t* path) {}
         }
         "@
-        
         New-Item -ItemType Directory -Force -Path "src/platform"
         Set-Content -Path "src/platform/windows.cc" -Value $StubContent -Encoding UTF8
-        Write-Host "Stub windows.cc criado para enganar o Linker!"
 
-    # --- REWRITE BUILD.RS ---
+    # --- REWRITE BUILD.RS (FULL CORRECT LOGIC) ---
     - name: Rewrite build.rs
       shell: powershell
       run: |
@@ -137,7 +132,7 @@ jobs:
         use std::path::Path;
 
         fn main() {
-            // 1. COMPILAÇÃO C++ (Usa o nosso Stub criado acima)
+            // 1. LINKAGEM C++ (Stubs)
             #[cfg(windows)]
             {
                 cc::Build::new()
@@ -147,17 +142,29 @@ jobs:
                 println!("cargo:rustc-link-lib=static=bridge");
             }
 
-            // 2. LINKAGEM MANUAL SODIUM
+            // 2. LINKAGEM SODIUM
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
-            // 3. VERSÃO
+            // 3. GERAÇÃO DE VERSÃO (FIXED)
+            // Escreve TANTO no OUT_DIR quanto no src/version.rs para garantir compatibilidade
+            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
+            
+            // Metodo 1: OUT_DIR (Padrao moderno)
             let out_dir = env::var("OUT_DIR").unwrap();
             let dest_path = Path::new(&out_dir).join("version.rs");
-            let version_code = "pub const VERSION: &'static str = \"1.1.9\";";
             let mut f = File::create(&dest_path).unwrap();
             f.write_all(version_code.as_bytes()).unwrap();
             
+            // Metodo 2: src/version.rs (Padrao antigo, necessario para mod version;)
+            // Usamos std::fs diretamente para escrever no codigo fonte
+            let src_version = Path::new("src").join("version.rs");
+            if let Ok(mut f_src) = File::create(&src_version) {
+                 f_src.write_all(version_code.as_bytes()).unwrap();
+            } else {
+                 println!("cargo:warning=Nao foi possivel escrever src/version.rs");
+            }
+
             // 4. RECURSOS
             #[cfg(windows)]
             {
@@ -165,12 +172,11 @@ jobs:
                 res.set_icon("$AbsPath\\icon.ico");
                 res.set_manifest_file("$AbsPath\\manifest.xml");
                 if let Err(e) = res.compile() {
-                    println!("cargo:warning=Resource compile error: {}", e);
+                    println!("cargo:warning=Resource error: {}", e);
                 }
             }
         }
         "@
-        
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
     # --- INSTALAÇÃO VCPKG ---
