@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Self-Contained v19)
+name: Build Saurus Legacy (32-bit Final Safe v20)
 
 on:
   workflow_dispatch:
@@ -44,10 +44,8 @@ jobs:
         }
         if (-not $success) { throw "Download Libsodium falhou" }
         Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
-        
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
         New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
-        
         $Lib = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
         Copy-Item $Lib "C:\libs_x86\lib\libsodium.lib" -Force
         Copy-Item $Lib "C:\libs_x86\lib\sodium.lib" -Force
@@ -74,16 +72,12 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- CORREÇÃO TELA BRANCA (UI ASSETS) ---
-    - name: Generate Inline UI Assets (Robust)
+    - name: Generate Inline UI Assets
       shell: python
       run: |
         import os
-        
-        # Garante a pasta
         if not os.path.exists("src/ui"):
             os.makedirs("src/ui")
-
         mapping = { 
             "get_index": "index.html", 
             "get_chatbox": "chatbox.html", 
@@ -94,24 +88,18 @@ jobs:
             "get_css_index": "index.css",
             "get_tis_common": "common.tis"
         }
-
-        # Função auxiliar para buscar arquivo em varias pastas
         def find_content(fname):
             candidates = [f"src/ui/{fname}", f"html/{fname}", fname]
             for path in candidates:
                 if os.path.exists(path):
                     with open(path, "rb") as f:
-                        # Lê binario e escapa para string Rust
                         content = f.read().decode('utf-8', errors='ignore')
                         return content.replace('\\', '\\\\').replace('"', '\\"')
             return ""
-
         with open("src/ui/inline.rs", "w") as f:
             for func, filename in mapping.items():
                 content = find_content(filename)
                 f.write(f'pub fn {func}() -> String {{ "{content}".to_string() }}\n')
-        
-        print("Assets de UI gerados em src/ui/inline.rs")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -123,21 +111,39 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- FORÇAR CRIAÇÃO DE VERSION.RS ---
-    - name: Force Create src/version.rs
+    # --- FORÇAR CRIAÇÃO DE ARQUIVOS AUXILIARES (Version + C++ Stub) ---
+    - name: Create Helper Files (Src)
       shell: powershell
       run: |
+        # 1. Version.rs
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
+        
+        # 2. Stub C++ (Fisico no src, nao no temp)
+        if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
+        $StubContent = @"
+        #include <windows.h>
+        #include <stdint.h>
+        extern "C" {
+            void handleMask(uint8_t* buf, int width, int height, int pitch) {}
+            void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
+            void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
+            BOOL LaunchProcessWin(const wchar_t* command_line) { return FALSE; }
+            BOOL inputDesktopSelected() { return TRUE; }
+            BOOL selectInputDesktop() { return TRUE; }
+            BOOL get_active_user(wchar_t* buffer, DWORD size) { return FALSE; }
+            BOOL blank_screen(BOOL on) { return FALSE; }
+            void AddRecentDocument(const wchar_t* path) {}
+        }
+        "@
+        Set-Content -Path "src/platform/windows_stub.cc" -Value $StubContent -Encoding UTF8
+        Write-Host "Arquivos auxiliares criados em SRC!"
 
-    # --- REWRITE BUILD.RS (ESTRATÉGIA SELF-CONTAINED) ---
-    - name: Rewrite build.rs (Self-Contained)
+    # --- REWRITE BUILD.RS (USA OS ARQUIVOS FISICOS) ---
+    - name: Rewrite build.rs
       shell: powershell
       run: |
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        
-        # Este script agora gera o arquivo C++ na pasta temporaria (OUT_DIR)
-        # e compila de la. Isso garante que o arquivo sempre existe.
         
         $NewContent = @"
         use std::env;
@@ -146,58 +152,40 @@ jobs:
         use std::path::Path;
 
         fn main() {
-            let out_dir = env::var("OUT_DIR").unwrap();
-            
-            // --- 1. GERAR E COMPILAR STUB C++ (SOLUÇÃO LINKER) ---
-            let stub_path = Path::new(&out_dir).join("stub_windows.cc");
-            let stub_code = r#"
-                #include <windows.h>
-                #include <stdint.h>
-                extern "C" {
-                    void handleMask(uint8_t* buf, int width, int height, int pitch) {}
-                    void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
-                    void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
-                    BOOL LaunchProcessWin(const wchar_t* command_line) { return FALSE; }
-                    BOOL inputDesktopSelected() { return TRUE; }
-                    BOOL selectInputDesktop() { return TRUE; }
-                    BOOL get_active_user(wchar_t* buffer, DWORD size) { return FALSE; }
-                    BOOL blank_screen(BOOL on) { return FALSE; }
-                    void AddRecentDocument(const wchar_t* path) {}
-                }
-            "#;
-            
-            let mut f_stub = File::create(&stub_path).unwrap();
-            f_stub.write_all(stub_code.as_bytes()).unwrap();
-            
-            cc::Build::new()
-                .file(&stub_path)
-                .cpp(true)
-                .compile("bridge");
-            println!("cargo:rustc-link-lib=static=bridge");
+            // 1. COMPILAÇÃO C++ (Usa o arquivo fisico src/platform/windows_stub.cc)
+            #[cfg(windows)]
+            {
+                cc::Build::new()
+                    .file("src/platform/windows_stub.cc")
+                    .cpp(true)
+                    .compile("bridge");
+                println!("cargo:rustc-link-lib=static=bridge");
+            }
 
-            // --- 2. LINKAGEM SODIUM ---
+            // 2. LINKAGEM SODIUM
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
-            // --- 3. GERAR VERSÃO (OUT_DIR) ---
+            // 3. REFLEXO DE VERSÃO (Para OUT_DIR)
+            // O arquivo src/version.rs ja existe, mas o build pode querer no OUT_DIR tambem
+            let out_dir = env::var("OUT_DIR").unwrap();
             let dest_path = Path::new(&out_dir).join("version.rs");
-            let mut f_ver = File::create(&dest_path).unwrap();
-            f_ver.write_all(b"pub const VERSION: &'static str = \"1.1.9\";").unwrap();
+            let mut f = File::create(&dest_path).unwrap();
+            f.write_all(b"pub const VERSION: &'static str = \"1.1.9\";").unwrap();
 
-            // --- 4. RECURSOS ---
+            // 4. RECURSOS
             #[cfg(windows)]
             {
                 let mut res = winres::WindowsResource::new();
                 res.set_icon("$AbsPath\\icon.ico");
                 res.set_manifest_file("$AbsPath\\manifest.xml");
-                // Tenta compilar, ignora erro se falhar (não quebra o build)
-                let _ = res.compile();
+                if let Err(e) = res.compile() {
+                    println!("cargo:warning=Resource error: {}", e);
+                }
             }
         }
         "@
-        
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
-        Write-Host "build.rs reescrito em modo Self-Contained!"
 
     # --- INSTALAÇÃO VCPKG ---
     - name: Install Dependencies (VCPKG x86)
@@ -228,10 +216,8 @@ jobs:
         git clone --depth 1 https://github.com/c-smile/sciter-sdk.git sciter_repo
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
         if (Test-Path $DllSource) {
-            if ((Get-Item $DllSource).Length -gt 1000000) {
-                 Copy-Item $DllSource "target\release\sciter.dll" -Force
-                 Write-Host "DLL Sciter 32-bit instalada!"
-            } else { throw "DLL invalida" }
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter 32-bit instalada!"
         } else { throw "DLL nao encontrada" }
 
     # --- BUILD FINAL ---
@@ -239,17 +225,13 @@ jobs:
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
-        
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
         $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
-        
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
-        
-        # Garante linkagem estática
         $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
