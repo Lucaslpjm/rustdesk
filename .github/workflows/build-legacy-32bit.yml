@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Safe v20)
+name: Build Saurus Legacy (32-bit Final Alignment v21)
 
 on:
   workflow_dispatch:
@@ -111,7 +111,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- FORÇAR CRIAÇÃO DE ARQUIVOS AUXILIARES (Version + C++ Stub) ---
+    # --- FORÇAR CRIAÇÃO DE ARQUIVOS AUXILIARES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -119,8 +119,9 @@ jobs:
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. Stub C++ (Fisico no src, nao no temp)
+        # 2. Stub C++ (CORREÇÃO DE NOME: windows.cc)
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
+        
         $StubContent = @"
         #include <windows.h>
         #include <stdint.h>
@@ -136,10 +137,11 @@ jobs:
             void AddRecentDocument(const wchar_t* path) {}
         }
         "@
-        Set-Content -Path "src/platform/windows_stub.cc" -Value $StubContent -Encoding UTF8
-        Write-Host "Arquivos auxiliares criados em SRC!"
+        # ATENÇÃO: Salvando como 'windows.cc' para bater com o build.rs
+        Set-Content -Path "src/platform/windows.cc" -Value $StubContent -Encoding UTF8
+        Write-Host "Stub windows.cc criado em src/platform/windows.cc"
 
-    # --- REWRITE BUILD.RS (USA OS ARQUIVOS FISICOS) ---
+    # --- REWRITE BUILD.RS ---
     - name: Rewrite build.rs
       shell: powershell
       run: |
@@ -152,22 +154,27 @@ jobs:
         use std::path::Path;
 
         fn main() {
-            // 1. COMPILAÇÃO C++ (Usa o arquivo fisico src/platform/windows_stub.cc)
+            // 1. COMPILAÇÃO C++ (Procura src/platform/windows.cc)
             #[cfg(windows)]
             {
-                cc::Build::new()
-                    .file("src/platform/windows_stub.cc")
-                    .cpp(true)
-                    .compile("bridge");
-                println!("cargo:rustc-link-lib=static=bridge");
+                let cc_path = "src/platform/windows.cc";
+                if std::path::Path::new(cc_path).exists() {
+                    cc::Build::new()
+                        .file(cc_path)
+                        .cpp(true)
+                        .compile("bridge");
+                    println!("cargo:rustc-link-lib=static=bridge");
+                } else {
+                    // Fallback de erro visivel
+                    println!("cargo:warning=FATAL: windows.cc nao encontrado pelo build.rs");
+                    panic!("Arquivo C++ obrigatorio nao encontrado");
+                }
             }
 
-            // 2. LINKAGEM SODIUM
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
-            // 3. REFLEXO DE VERSÃO (Para OUT_DIR)
-            // O arquivo src/version.rs ja existe, mas o build pode querer no OUT_DIR tambem
+            // 3. REFLEXO DE VERSÃO
             let out_dir = env::var("OUT_DIR").unwrap();
             let dest_path = Path::new(&out_dir).join("version.rs");
             let mut f = File::create(&dest_path).unwrap();
@@ -216,8 +223,10 @@ jobs:
         git clone --depth 1 https://github.com/c-smile/sciter-sdk.git sciter_repo
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
         if (Test-Path $DllSource) {
-            Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter 32-bit instalada!"
+            if ((Get-Item $DllSource).Length -gt 1000000) {
+                 Copy-Item $DllSource "target\release\sciter.dll" -Force
+                 Write-Host "DLL Sciter 32-bit instalada!"
+            } else { throw "DLL invalida" }
         } else { throw "DLL nao encontrada" }
 
     # --- BUILD FINAL ---
