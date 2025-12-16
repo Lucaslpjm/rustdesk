@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final CRLF Fix v22)
+name: Build Saurus Legacy (32-bit Final Bundler v23)
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
     - name: Install Legacy LLVM
       run: choco install llvm --version 12.0.0 --allow-downgrade -y
 
-    # --- SETUP LIBSODIUM MANUAL ---
+    # --- SETUP LIBSODIUM ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -72,43 +72,80 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    - name: Generate Inline UI Assets (LF Fix)
+    # --- GENERATE INLINE UI ASSETS (THE BUNDLER FIX) ---
+    - name: Generate Bundled UI Assets
       shell: python
       run: |
         import os
+        import re
+
         if not os.path.exists("src/ui"):
             os.makedirs("src/ui")
+
         mapping = { 
             "get_index": "index.html", 
             "get_chatbox": "chatbox.html", 
             "get_cm": "cm.html", 
             "get_install": "install.html", 
             "get_remote": "remote.html",
+            # We still map these for the compiler, but they will be empty
+            # because their content will be injected into the HTMLs
             "get_css_common": "common.css",
             "get_css_index": "index.css",
             "get_tis_common": "common.tis"
         }
-        def find_content(fname):
+
+        def load_file_content(fname):
+            # Look in multiple places
             candidates = [f"src/ui/{fname}", f"html/{fname}", fname]
             for path in candidates:
                 if os.path.exists(path):
                     with open(path, "rb") as f:
-                        # Lê binário
-                        content_bytes = f.read()
-                        # Decodifica
-                        content = content_bytes.decode('utf-8', errors='ignore')
-                        # Remove CR (\r) para evitar erro no Rust
-                        content = content.replace('\r', '')
-                        # Escapa caracteres especiais para string Rust
-                        content = content.replace('\\', '\\\\').replace('"', '\\"')
-                        return content
+                        # Normalize line endings to avoid Rust "bare CR" error
+                        return f.read().decode('utf-8', errors='ignore').replace('\r\n', '\n').replace('\r', '\n')
             return ""
 
-        # Abre com newline='\n' para forçar LF
+        def bundle_content(html_content):
+            # 1. Inline CSS (@import url(...))
+            def replace_css(match):
+                css_file = match.group(1)
+                css_content = load_file_content(css_file)
+                if css_content:
+                    return f"<style>/* Inlined {css_file} */\n{css_content}\n</style>"
+                return match.group(0) # fallback
+            
+            html_content = re.sub(r'@import\s+url\((.*?)\);', replace_css, html_content)
+
+            # 2. Inline TIScript (include "...")
+            def replace_tis(match):
+                tis_file = match.group(1)
+                tis_content = load_file_content(tis_file)
+                if tis_content:
+                    return f"/* Inlined {tis_file} */\n{tis_content}\n"
+                return match.group(0)
+
+            html_content = re.sub(r'include\s+"(.*?)";', replace_tis, html_content)
+            
+            return html_content
+
         with open("src/ui/inline.rs", "w", newline='\n') as f:
             for func, filename in mapping.items():
-                content = find_content(filename)
-                f.write(f'pub fn {func}() -> String {{ "{content}".to_string() }}\n')
+                raw_content = load_file_content(filename)
+                
+                # Only bundle if it is an HTML file
+                if filename.endswith(".html"):
+                    final_content = bundle_content(raw_content)
+                else:
+                    # For individual CSS/TIS getters, return empty string 
+                    # since they are now bundled in HTML, 
+                    # preventing double loading errors.
+                    final_content = "" 
+
+                # Escape for Rust string literal
+                final_content = final_content.replace('\\', '\\\\').replace('"', '\\"')
+                f.write(f'pub fn {func}() -> String {{ "{final_content}".to_string() }}\n')
+
+        print("UI Bundling Complete.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -120,17 +157,14 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- FORÇAR CRIAÇÃO DE ARQUIVOS AUXILIARES ---
+    # --- CREATE HELPER FILES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
-        # 1. Version.rs
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. Stub C++ (CORREÇÃO DE NOME: windows.cc)
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
-        
         $StubContent = @"
         #include <windows.h>
         #include <stdint.h>
@@ -146,7 +180,6 @@ jobs:
             void AddRecentDocument(const wchar_t* path) {}
         }
         "@
-        # ATENÇÃO: Salvando como 'windows.cc' para bater com o build.rs
         Set-Content -Path "src/platform/windows.cc" -Value $StubContent -Encoding UTF8
 
     # --- REWRITE BUILD.RS ---
@@ -154,7 +187,6 @@ jobs:
       shell: powershell
       run: |
         $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        
         $NewContent = @"
         use std::env;
         use std::fs::File;
@@ -166,16 +198,10 @@ jobs:
             {
                 let cc_path = "src/platform/windows.cc";
                 if std::path::Path::new(cc_path).exists() {
-                    cc::Build::new()
-                        .file(cc_path)
-                        .cpp(true)
-                        .compile("bridge");
+                    cc::Build::new().file(cc_path).cpp(true).compile("bridge");
                     println!("cargo:rustc-link-lib=static=bridge");
-                } else {
-                    println!("cargo:warning=FATAL: windows.cc nao encontrado pelo build.rs");
                 }
             }
-
             println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
             println!("cargo:rustc-link-lib=static=sodium");
 
@@ -189,9 +215,7 @@ jobs:
                 let mut res = winres::WindowsResource::new();
                 res.set_icon("$AbsPath\\icon.ico");
                 res.set_manifest_file("$AbsPath\\manifest.xml");
-                if let Err(e) = res.compile() {
-                    println!("cargo:warning=Resource error: {}", e);
-                }
+                let _ = res.compile();
             }
         }
         "@
@@ -235,16 +259,13 @@ jobs:
       run: |
         $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
         $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
-        
         $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
         $env:OPUS_STATIC = "1"
         $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
         $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
-        
         $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
         $env:SODIUM_SHARED = "false"
-        
         $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
         cargo build --target i686-pc-windows-msvc --release --features inline
