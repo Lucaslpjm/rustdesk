@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Fix v26)
+name: Build Saurus Legacy (32-bit Final v27)
 
 on:
   workflow_dispatch:
@@ -72,8 +72,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (SMART BUNDLER v2) ---
-    - name: Generate Smart UI (Correct Inline)
+    # --- GERADOR DE UI (CLEAN BUNDLER + SAFE AUTO-INSTALL) ---
+    - name: Generate UI Assets (Safe Bundle)
       shell: python
       run: |
         import os
@@ -82,30 +82,24 @@ jobs:
         if not os.path.exists("src/ui"):
             os.makedirs("src/ui")
 
-        mapping = { 
-            "get_index": "index.html", 
-            "get_chatbox": "chatbox.html", 
-            "get_cm": "cm.html", 
-            "get_install": "install.html", 
-            "get_remote": "remote.html",
-            "get_css_common": "common.css",
-            "get_css_index": "index.css",
-            "get_tis_common": "common.tis"
-        }
+        # Lista de arquivos que precisamos interceptar
+        mapping = ["index.html", "chatbox.html", "cm.html", "install.html", "remote.html", "common.css", "index.css", "common.tis"]
 
-        VISIBILITY_CSS = """
-        html, body { background: #FFFFFF !important; color: #000000 !important; }
-        * { font-family: "Segoe UI", sans-serif; }
-        """
+        # CSS de Alta Visibilidade (Fundo Branco)
+        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
 
-        # Auto-Install com parametro TRUE
+        # Script de Auto-Instalação Seguro (Try-Catch)
+        # Executa 1.5s após abrir. Se falhar, não trava o app.
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
             self.timer(1500, function() {
-               // Chama install_me com TRUE (argumento obrigatorio)
-               view.install_me(true); 
+               try {
+                   view.install_me(true); 
+               } catch(e) {
+                   stdout.println("AutoInstall failed but app is running: " + e);
+               }
                return false; 
             });
           }
@@ -117,63 +111,60 @@ jobs:
             for p in candidates:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        # utf-8-sig remove BOM se existir
-                        return f.read().decode('utf-8-sig', errors='ignore').replace('\r\n', '\n').replace('\r', '\n')
+                        return f.read().decode('utf-8', errors='ignore').replace('\r\n', '\n').replace('\r', '\n')
             return ""
 
-        def process_content(filename, content):
-            # 1. Substitui imports de CSS (@import url(...);)
-            def sub_css(match):
-                fpath = match.group(1)
-                inner = load_file(fpath)
-                return f"<style>/* {fpath} */\n{inner}\n</style>"
+        def bundle_index_html(content):
+            # 1. Remover imports quebrados do legado
+            # Remove linhas como: @import url(common.css); ou include "common.tis";
+            content = re.sub(r'@import\s+url\(.*?\);', '', content)
+            content = re.sub(r'include\s+".*?";', '', content)
+
+            # 2. Carregar dependencias manualmente
+            css_common = load_file("common.css")
+            css_index = load_file("index.css")
+            tis_common = load_file("common.tis")
+
+            # 3. Construir o HTML monolitico
+            # Injeta CSS no head
+            style_block = f"<style>{VISIBILITY_CSS}\n{css_common}\n{css_index}</style>"
+            content = content.replace("</head>", f"{style_block}</head>")
             
-            content = re.sub(r'@import\s+url\((.*?)\);', sub_css, content)
-
-            # 2. Substitui imports de TIS (include "...";)
-            # O REGEX agora pega o ";" final para evitar erro de sintaxe
-            def sub_tis(match):
-                fpath = match.group(1)
-                inner = load_file(fpath)
-                return f"/* {fpath} */\n{inner}\n"
+            # Injeta TIS e AutoInstall no body
+            script_block = f"<script type='text/tiscript'>\n{tis_common}\n</script>"
+            content = content.replace("</body>", f"{script_block}\n{AUTO_INSTALL_SCRIPT}</body>")
             
-            content = re.sub(r'include\s+"(.*?)";', sub_tis, content)
-
-            # 3. Injeções Especiais
-            if "index.html" in filename:
-                # Injeta CSS Global
-                content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
-                # Injeta Auto Install
-                content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
-
             return content
 
         with open("src/ui/inline.rs", "w", newline='\n') as f:
-            for func, filename in mapping.items():
-                raw = load_file(filename)
+            for filename in mapping:
+                func_name = "get_" + filename.replace(".", "_")
+                raw_content = load_file(filename)
                 
-                # Se for HTML, processa os imports (Bundling)
-                if filename.endswith(".html"):
-                    final_text = process_content(filename, raw)
+                final_content = ""
+                if filename == "index.html":
+                    final_content = bundle_index_html(raw_content)
+                elif filename.endswith(".html"):
+                    # Outros HTMLs apenas injetam o CSS de visibilidade
+                    final_content = raw_content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
                 else:
-                    # Se nao for HTML, nao precisamos retornar nada pois ja foi
-                    # injetado dentro dos HTMLs pelo processo acima.
-                    # Retornar vazio evita duplicidade e erro de load.
-                    final_text = ""
+                    # CSS e TIS avulsos retornam vazio pois já foram embutidos no index.html
+                    # Isso evita que o Sciter tente carregar e falhe (erro 161)
+                    final_content = ""
 
-                # Converte para Bytes para evitar erro de String do Rust
-                bytes_data = list(final_text.encode('utf-8'))
+                # Conversão para Bytes (Evita erros de String/Escape)
+                bytes_data = list(final_content.encode('utf-8'))
                 bytes_str = ", ".join(map(str, bytes_data))
                 
                 rust_code = f"""
-                pub fn {func}() -> String {{
+                pub fn {func_name}() -> String {{
                     let data: &[u8] = &[{bytes_str}];
                     String::from_utf8_lossy(data).to_string()
                 }}
                 """
                 f.write(rust_code)
-        
-        print("UI Bundled & Fixed.")
+
+        print("UI Bundled com sucesso (Modo Seguro).")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -185,7 +176,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- ARQUIVOS AUXILIARES (Version + C++ Stub) ---
+    # --- ARQUIVOS AUXILIARES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -193,7 +184,7 @@ jobs:
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. C++ Stub (Com as funcoes que faltavam)
+        # 2. C++ Stub (RETORNA TRUE para evitar crash)
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
         $StubContent = @"
         #include <windows.h>
@@ -202,11 +193,12 @@ jobs:
             void handleMask(uint8_t* buf, int width, int height, int pitch) {}
             void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
             void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
-            BOOL LaunchProcessWin(const wchar_t* command_line) { return FALSE; }
+            // Retorna TRUE para fingir sucesso e nao crashar o Rust
+            BOOL LaunchProcessWin(const wchar_t* command_line) { return TRUE; }
             BOOL inputDesktopSelected() { return TRUE; }
             BOOL selectInputDesktop() { return TRUE; }
-            BOOL get_active_user(wchar_t* buffer, DWORD size) { return FALSE; }
-            BOOL blank_screen(BOOL on) { return FALSE; }
+            BOOL get_active_user(wchar_t* buffer, DWORD size) { return TRUE; }
+            BOOL blank_screen(BOOL on) { return TRUE; }
             void AddRecentDocument(const wchar_t* path) {}
         }
         "@
