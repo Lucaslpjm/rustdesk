@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Native v32)
+name: Build Saurus Legacy (32-bit Final v33)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
       shell: powershell
 
-    # --- SETUP LIBSODIUM MANUAL ---
+    # --- SETUP LIBSODIUM ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -76,103 +76,99 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- PREPARAÇÃO DE ARQUIVOS NATIVOS (V32) ---
-    - name: Prepare Native UI Files
+    # --- PERFECT BUNDLER (Python Embedding) ---
+    - name: Perfect Bundle UI
       shell: python
       run: |
         import os
-        import shutil
-
-        # 1. Definições de Injeção (CSS Visível + Auto Install)
-        VISIBILITY_CSS = """
-        html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: "Segoe UI", sans-serif; }
-        """
         
-        # Script executado 1.5s após abrir a janela
-        AUTO_INSTALL_SCRIPT = """
-        <script type="text/tiscript">
-          function self.ready() {
-            view.state = View.WINDOW_SHOWN;
-            self.timer(1500, function() {
-               try { view.install_me(true); } catch(e) {}
-               return false; 
-            });
-          }
-        </script>
-        """
-
-        # Garante a pasta de destino
         target_dir = "src/ui"
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
-        # Lista de arquivos necessários
-        files_to_process = [
-            "index.html", "chatbox.html", "cm.html", "install.html", 
-            "remote.html", "common.css", "index.css", "common.tis"
-        ]
+        # 1. VISIBILIDADE (CSS)
+        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
 
-        def get_source_content(fname):
-            # Procura o arquivo original em vários locais possíveis
-            candidates = [f"src/ui/{fname}", f"html/{fname}", fname]
-            for path in candidates:
-                if os.path.exists(path):
-                    with open(path, "rb") as f:
-                        return f.read().decode('utf-8', errors='ignore')
-            return ""
-
-        # Processa cada arquivo, injeta o código e salva em src/ui/
-        for fname in files_to_process:
-            content = get_source_content(fname)
-            
-            # Se o arquivo não existir (ex: index.css as vezes falta), cria vazio
-            if not content:
-                print(f"Warning: {fname} not found, creating empty.")
-                content = ""
-
-            # Injeções
-            if fname.endswith(".html"):
-                # Remove imports legados que causam erro
-                content = content.replace('@import url(common.css);', '')
-                content = content.replace('include "common.tis";', '')
-                
-                # Injeta CSS Global
-                if "</head>" in content:
-                    content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
-                else:
-                    content = f"<style>{VISIBILITY_CSS}</style>" + content
-
-            if fname == "index.html":
-                # Injeta Auto-Install no final do body
-                if "</body>" in content:
-                    content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
-                else:
-                    content += AUTO_INSTALL_SCRIPT
-            
-            # Salva o arquivo modificado fisicamente em src/ui
-            # O Rust vai ler DESTE local
-            with open(f"{target_dir}/{fname}", "w", encoding="utf-8", newline='\n') as f:
-                f.write(content)
-
-        # 3. Gera o inline.rs usando a macro NATIVA include_str!
-        # Isso garante que o Rust leia o arquivo corretamente, sem erros de string do Python
-        rust_code = """
-        pub fn get_index() -> String { include_str!("index.html").to_string() + include_str!("common.css") + include_str!("common.tis") }
-        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() + include_str!("common.css") }
-        pub fn get_cm() -> String { include_str!("cm.html").to_string() + include_str!("common.css") }
-        pub fn get_install() -> String { include_str!("install.html").to_string() + include_str!("common.css") }
-        pub fn get_remote() -> String { include_str!("remote.html").to_string() + include_str!("common.css") }
-        
-        // Funções auxiliares vazias ou redundantes para manter compatibilidade
-        pub fn get_css_common() -> String { include_str!("common.css").to_string() }
-        pub fn get_css_index() -> String { String::new() } 
-        pub fn get_tis_common() -> String { include_str!("common.tis").to_string() }
+        # 2. AUTO-INSTALL (TISCRIPT)
+        AUTO_INSTALL = """
+        function self.ready() {
+            view.state = View.WINDOW_SHOWN;
+            self.timer(2000, function() {
+               try { view.install_me(true); } catch(e) {}
+               return false; 
+            });
+        }
         """
 
+        def read_file(name):
+            # Tenta ler do src/ui ou da raiz
+            paths = [f"src/ui/{name}", f"html/{name}", name]
+            for p in paths:
+                if os.path.exists(p):
+                    with open(p, "rb") as f:
+                        return f.read().decode("utf-8", errors="ignore").replace("\r", "")
+            return ""
+
+        # Carrega Assets
+        css_common = read_file("common.css")
+        tis_common = read_file("common.tis")
+        index_html = read_file("index.html")
+
+        # --- BUNDLE INDEX.HTML ---
+        # Remover imports antigos para não dar erro 404
+        index_html = index_html.replace('@import url(common.css);', '')
+        index_html = index_html.replace('include "common.tis";', '')
+
+        # Inserir CSS no HEAD
+        style_tag = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n</style>"
+        if "</head>" in index_html:
+            index_html = index_html.replace("</head>", f"{style_tag}</head>")
+        else:
+            index_html = style_tag + index_html
+
+        # Inserir TISCRIPT e AUTO-INSTALL no final do BODY
+        script_tag = f'<script type="text/tiscript">\n{tis_common}\n{AUTO_INSTALL}\n</script>'
+        if "</body>" in index_html:
+            index_html = index_html.replace("</body>", f"{script_tag}</body>")
+        else:
+            index_html += script_tag
+
+        # Salvar o index.html modificado para o Rust ler
+        with open(f"{target_dir}/index.html", "w", encoding="utf-8", newline="\n") as f:
+            f.write(index_html)
+
+        # Copiar/Salvar outros arquivos para garantir existência
+        for fName in ["chatbox.html", "cm.html", "install.html", "remote.html"]:
+            content = read_file(fName)
+            # Injeta apenas o CSS básico neles
+            if "</head>" in content:
+                content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
+            with open(f"{target_dir}/{fName}", "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+
+        # Criar arquivos dummy para common.css/tis pois já foram embutidos
+        # mas o Rust ainda pode tentar linká-los
+        with open(f"{target_dir}/common.css", "w") as f: f.write(VISIBILITY_CSS)
+        with open(f"{target_dir}/common.tis", "w") as f: f.write("")
+        with open(f"{target_dir}/index.css", "w") as f: f.write("")
+
+        # --- GERAR RUST INLINE (SIMPLES E DIRETO) ---
+        # Agora o Rust só lê os arquivos, sem concatenar strings
+        rust_code = """
+        pub fn get_index() -> String { include_str!("index.html").to_string() }
+        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
+        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
+        pub fn get_install() -> String { include_str!("install.html").to_string() }
+        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
+        pub fn get_css_common() -> String { include_str!("common.css").to_string() }
+        pub fn get_css_index() -> String { include_str!("index.css").to_string() }
+        pub fn get_tis_common() -> String { include_str!("common.tis").to_string() }
+        """
+        
         with open(f"{target_dir}/inline.rs", "w", encoding="utf-8") as f:
             f.write(rust_code)
-
-        print("Native UI Asset Injection Complete.")
+            
+        print("UI Bundling Complete.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -184,7 +180,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- ARQUIVOS AUXILIARES (Version + C++ Stub) ---
+    # --- ARQUIVOS AUXILIARES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -248,14 +244,13 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (ROBUSTA) ---
+    # --- INSTALAÇÃO VCPKG ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
         
-        # Clone recursivo
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         git fetch --all --tags
