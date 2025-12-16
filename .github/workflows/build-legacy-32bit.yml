@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Clean v29)
+name: Build Saurus Legacy (32-bit Final Robust v30)
 
 on:
   workflow_dispatch:
@@ -26,10 +26,14 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    - name: Install Legacy LLVM
-      run: choco install llvm --version 12.0.0 --allow-downgrade -y
+    # --- INSTALAÇÃO DE FERRAMENTAS (CORREÇÃO DE REDE) ---
+    - name: Install Build Tools (LLVM & CMake)
+      run: |
+        choco install llvm --version 12.0.0 --allow-downgrade -y
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+      shell: powershell
 
-    # --- SETUP LIBSODIUM ---
+    # --- SETUP LIBSODIUM MANUAL ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -72,7 +76,7 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (SANITIZED BUNDLER) ---
+    # --- GERADOR DE UI (SANITIZED BUNDLER + AUTO INSTALL) ---
     - name: Generate UI Assets (Sanitized)
       shell: python
       run: |
@@ -95,7 +99,7 @@ jobs:
 
         VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
         
-        # Script de Auto-Instalação (Tenta instalar silenciosamente)
+        # Script de Auto-Instalação
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
@@ -113,14 +117,12 @@ jobs:
             for p in candidates:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        # Decodifica e LIMPA o Carriage Return (\r)
-                        text = f.read().decode('utf-8', errors='ignore')
-                        text = text.replace('\r', '') 
-                        return text
+                        # Decodifica e remove CR
+                        return f.read().decode('utf-8', errors='ignore').replace('\r', '')
             return ""
 
         def bundle_html(content, filename):
-            # Limpa imports antigos
+            # Limpa imports legados
             content = re.sub(r'@import\s+url\(.*?\);', '', content)
             content = re.sub(r'include\s+".*?";', '', content)
 
@@ -148,19 +150,13 @@ jobs:
                 if filename.endswith(".html"):
                     final = bundle_html(raw, filename)
                 else:
-                    final = "" # CSS/TIS isolados retornam vazio pois foram embutidos
+                    final = "" 
 
-                # Escapa para String Literal do Rust
-                # 1. Escapa backslashes
-                final = final.replace('\\', '\\\\')
-                # 2. Escapa aspas duplas
-                final = final.replace('"', '\\"')
-                
-                # Escreve a função no arquivo .rs
-                # Usando formatacao simples para evitar problemas
+                # Escape para String Rust
+                final = final.replace('\\', '\\\\').replace('"', '\\"')
                 f.write(f'pub fn {func_name}() -> String {{ "{final}".to_string() }}\n')
 
-        print("UI Assets Generated and Sanitized.")
+        print("UI Assets Generated.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -189,7 +185,6 @@ jobs:
             void handleMask(uint8_t* buf, int width, int height, int pitch) {}
             void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
             void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
-            // Retorna TRUE para enganar verificacoes de erro
             BOOL LaunchProcessWin(const wchar_t* command_line) { return TRUE; }
             BOOL inputDesktopSelected() { return TRUE; }
             BOOL selectInputDesktop() { return TRUE; }
@@ -239,17 +234,25 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG ---
+    # --- INSTALAÇÃO VCPKG (CORRIGIDA) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
+        
+        # Clone recursivo e completo para garantir histórico
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
-        git -c advice.detachedHead=false checkout 5765d1d644787a28e8d839659345c26915152771
+        git fetch --all --tags
+        
+        # Checkout Jan 2024
+        git checkout 5765d1d644787a28e8d839659345c26915152771
+        
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
+        
+        # Loop com vcpkg
         $maxRetries = 5; $retryCount = 0; $success = $false
         while (-not $success -and $retryCount -lt $maxRetries) {
             try {
@@ -286,7 +289,6 @@ jobs:
         $env:SODIUM_SHARED = "false"
         $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
-        # Features 'inline' ativada
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
