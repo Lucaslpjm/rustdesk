@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final AutoInstall v25)
+name: Build Saurus Legacy (32-bit Final Fix v26)
 
 on:
   workflow_dispatch:
@@ -72,8 +72,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (AUTO-INSTALL + BYTE ARRAY) ---
-    - name: Generate Smart UI (Auto-Install)
+    # --- GERADOR DE UI (SMART BUNDLER v2) ---
+    - name: Generate Smart UI (Correct Inline)
       shell: python
       run: |
         import os
@@ -93,30 +93,20 @@ jobs:
             "get_tis_common": "common.tis"
         }
 
-        # 1. CSS PARA CORRIGIR CORES E VISIBILIDADE
-        # Força fundo branco e texto preto em tudo
         VISIBILITY_CSS = """
         html, body { background: #FFFFFF !important; color: #000000 !important; }
         * { font-family: "Segoe UI", sans-serif; }
-        button { border: 1px solid #999 !important; background: #EEE !important; color: black !important; }
-        button:hover { background: #DDD !important; }
         """
 
-        # 2. SCRIPT DE AUTO-INSTALAÇÃO (TISCRIPT)
-        # Executa após 2 segundos (2000ms) que a janela abrir
-        # Chama a função nativa do Rust 'install_me()' ou 'install()'
+        # Auto-Install com parametro TRUE
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
-            // Tenta focar a janela
             view.state = View.WINDOW_SHOWN;
-            
-            // Timer para auto-instalação
-            self.timer(2000, function() {
-               // Chama o comando de instalar do RustDesk
-               // view.install_me() é o binding comum na v1.1.9
-               view.install_me(); 
-               return false; // para o timer
+            self.timer(1500, function() {
+               // Chama install_me com TRUE (argumento obrigatorio)
+               view.install_me(true); 
+               return false; 
             });
           }
         </script>
@@ -127,49 +117,51 @@ jobs:
             for p in candidates:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        return f.read().decode('utf-8', errors='ignore')
+                        # utf-8-sig remove BOM se existir
+                        return f.read().decode('utf-8-sig', errors='ignore').replace('\r\n', '\n').replace('\r', '\n')
             return ""
 
-        # Função simples de bundle para evitar erros de path no Sciter
-        def bundle_content(filename, content):
-            # Injeta CSS Global
-            if ".html" in filename:
-                content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
+        def process_content(filename, content):
+            # 1. Substitui imports de CSS (@import url(...);)
+            def sub_css(match):
+                fpath = match.group(1)
+                inner = load_file(fpath)
+                return f"<style>/* {fpath} */\n{inner}\n</style>"
             
-            # Injeta Auto-Install APENAS no index.html (janela principal)
-            if filename == "index.html":
+            content = re.sub(r'@import\s+url\((.*?)\);', sub_css, content)
+
+            # 2. Substitui imports de TIS (include "...";)
+            # O REGEX agora pega o ";" final para evitar erro de sintaxe
+            def sub_tis(match):
+                fpath = match.group(1)
+                inner = load_file(fpath)
+                return f"/* {fpath} */\n{inner}\n"
+            
+            content = re.sub(r'include\s+"(.*?)";', sub_tis, content)
+
+            # 3. Injeções Especiais
+            if "index.html" in filename:
+                # Injeta CSS Global
+                content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
+                # Injeta Auto Install
                 content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
 
-            # Inline imports simples
-            def replacer(match):
-                fpath = match.group(1)
-                c = load_file(fpath)
-                if fpath.endswith(".css"): return f"<style>{c}</style>"
-                if fpath.endswith(".tis"): return f"<script type='text/tiscript'>{c}</script>"
-                return ""
-            
-            content = re.sub(r'@import\s+url\((.*?)\);', replacer, content)
-            content = re.sub(r'include\s+"(.*?)";', replacer, content)
             return content
 
         with open("src/ui/inline.rs", "w", newline='\n') as f:
-            for func, fname in mapping.items():
-                raw = load_file(fname)
-                if not raw:
-                    # Se nao achou, cria vazio para nao quebrar compilação
-                    f.write(f'pub fn {func}() -> String {{ String::new() }}\n')
-                    continue
-
-                if fname.endswith(".html"):
-                    final_text = bundle_content(fname, raw)
-                elif fname.endswith(".css"):
-                    final_text = VISIBILITY_CSS + raw
+            for func, filename in mapping.items():
+                raw = load_file(filename)
+                
+                # Se for HTML, processa os imports (Bundling)
+                if filename.endswith(".html"):
+                    final_text = process_content(filename, raw)
                 else:
-                    final_text = raw
+                    # Se nao for HTML, nao precisamos retornar nada pois ja foi
+                    # injetado dentro dos HTMLs pelo processo acima.
+                    # Retornar vazio evita duplicidade e erro de load.
+                    final_text = ""
 
-                # CONVERSÃO PARA BYTES (A SOLUÇÃO PARA 'bare CR' e Erros de String)
-                # Convertemos para lista de u8: [10, 20, 30...]
-                # O Rust reconstrói a string a partir dos bytes, ignorando formatação do arquivo .rs
+                # Converte para Bytes para evitar erro de String do Rust
                 bytes_data = list(final_text.encode('utf-8'))
                 bytes_str = ", ".join(map(str, bytes_data))
                 
@@ -181,7 +173,7 @@ jobs:
                 """
                 f.write(rust_code)
         
-        print("UI Gerada com Sucesso (AutoInstall + Visibilidade + ByteMode)")
+        print("UI Bundled & Fixed.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -193,15 +185,15 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- CRIAÇÃO DE ARQUIVOS AUXILIARES (Version + C++ Stub) ---
+    # --- ARQUIVOS AUXILIARES (Version + C++ Stub) ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
-        # 1. Version.rs
+        # 1. Version
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. Stub C++
+        # 2. C++ Stub (Com as funcoes que faltavam)
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
         $StubContent = @"
         #include <windows.h>
