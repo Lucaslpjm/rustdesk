@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Robust v30)
+name: Build Saurus Legacy (32-bit Final Logic Fix v31)
 
 on:
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # --- INSTALAÇÃO DE FERRAMENTAS (CORREÇÃO DE REDE) ---
+    # --- INSTALAÇÃO DE FERRAMENTAS ---
     - name: Install Build Tools (LLVM & CMake)
       run: |
         choco install llvm --version 12.0.0 --allow-downgrade -y
@@ -76,8 +76,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (SANITIZED BUNDLER + AUTO INSTALL) ---
-    - name: Generate UI Assets (Sanitized)
+    # --- GERADOR DE UI (CORREÇÃO DE LOOP v31) ---
+    - name: Generate UI Assets (Correct Loop)
       shell: python
       run: |
         import os
@@ -86,6 +86,7 @@ jobs:
         if not os.path.exists("src/ui"):
             os.makedirs("src/ui")
 
+        # MAPA: Nome_da_Funcao_Rust -> Nome_do_Arquivo_Real
         mapping = { 
             "get_index": "index.html", 
             "get_chatbox": "chatbox.html", 
@@ -117,7 +118,7 @@ jobs:
             for p in candidates:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        # Decodifica e remove CR
+                        # Decodifica e remove CR para evitar erro "bare CR"
                         return f.read().decode('utf-8', errors='ignore').replace('\r', '')
             return ""
 
@@ -143,20 +144,25 @@ jobs:
             return content
 
         with open("src/ui/inline.rs", "w", newline='\n') as f:
-            for filename, func_name in mapping.items():
+            # CORRECAO V31: A ordem de iteracao estava errada antes
+            # Agora: func_name = "get_index", filename = "index.html"
+            for func_name, filename in mapping.items():
                 raw = load_clean(filename)
                 
                 final = ""
                 if filename.endswith(".html"):
                     final = bundle_html(raw, filename)
                 else:
+                    # CSS/TIS isolados retornam vazio pois foram embutidos no HTML
                     final = "" 
 
-                # Escape para String Rust
+                # Escape para String Literal do Rust
                 final = final.replace('\\', '\\\\').replace('"', '\\"')
+                
+                # Gera a funcao Rust valida
                 f.write(f'pub fn {func_name}() -> String {{ "{final}".to_string() }}\n')
 
-        print("UI Assets Generated.")
+        print("UI Assets Generated Correctly.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -172,11 +178,9 @@ jobs:
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
-        # 1. Version
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. C++ Stub (RETORNA TRUE)
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
         $StubContent = @"
         #include <windows.h>
@@ -234,25 +238,22 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (CORRIGIDA) ---
+    # --- INSTALAÇÃO VCPKG ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
         
-        # Clone recursivo e completo para garantir histórico
+        # Clone recursivo
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         git fetch --all --tags
-        
-        # Checkout Jan 2024
         git checkout 5765d1d644787a28e8d839659345c26915152771
         
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
         
-        # Loop com vcpkg
         $maxRetries = 5; $retryCount = 0; $success = $false
         while (-not $success -and $retryCount -lt $maxRetries) {
             try {
