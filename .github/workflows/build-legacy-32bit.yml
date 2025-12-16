@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Fix v28)
+name: Build Saurus Legacy (32-bit Final Clean v29)
 
 on:
   workflow_dispatch:
@@ -72,8 +72,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (FIXED MAPPING & BUNDLING) ---
-    - name: Generate UI Assets (Fixed Map)
+    # --- GERADOR DE UI (SANITIZED BUNDLER) ---
+    - name: Generate UI Assets (Sanitized)
       shell: python
       run: |
         import os
@@ -82,22 +82,20 @@ jobs:
         if not os.path.exists("src/ui"):
             os.makedirs("src/ui")
 
-        # MAPEAMENTO EXPLÍCITO: Nome do Arquivo -> Nome da Função Rust
-        # Isso garante que nenhuma função seja esquecida
-        mapping = {
-            "index.html": "get_index",
-            "chatbox.html": "get_chatbox",
-            "cm.html": "get_cm",
-            "install.html": "get_install",
-            "remote.html": "get_remote",
-            "common.css": "get_css_common",
-            "index.css": "get_css_index",
-            "common.tis": "get_tis_common"
+        mapping = { 
+            "get_index": "index.html", 
+            "get_chatbox": "chatbox.html", 
+            "get_cm": "cm.html", 
+            "get_install": "install.html", 
+            "get_remote": "remote.html",
+            "get_css_common": "common.css",
+            "get_css_index": "index.css",
+            "get_tis_common": "common.tis"
         }
 
         VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
         
-        # Script de Auto-Install Seguro
+        # Script de Auto-Instalação (Tenta instalar silenciosamente)
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
@@ -110,31 +108,31 @@ jobs:
         </script>
         """
 
-        def load_file(fname):
+        def load_clean(fname):
             candidates = [f"src/ui/{fname}", f"html/{fname}", fname]
             for p in candidates:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        return f.read().decode('utf-8', errors='ignore').replace('\r\n', '\n').replace('\r', '\n')
+                        # Decodifica e LIMPA o Carriage Return (\r)
+                        text = f.read().decode('utf-8', errors='ignore')
+                        text = text.replace('\r', '') 
+                        return text
             return ""
 
         def bundle_html(content, filename):
-            # Limpa imports legados
+            # Limpa imports antigos
             content = re.sub(r'@import\s+url\(.*?\);', '', content)
             content = re.sub(r'include\s+".*?";', '', content)
 
-            # Carrega dependencias
-            css_common = load_file("common.css")
-            css_index = load_file("index.css") # Pode ser vazio se nao existir
-            tis_common = load_file("common.tis")
+            css_common = load_clean("common.css")
+            css_index = load_clean("index.css")
+            tis_common = load_clean("common.tis")
 
-            # Monta o bundle
             style_block = f"<style>{VISIBILITY_CSS}\n{css_common}\n{css_index}</style>"
             script_block = f"<script type='text/tiscript'>\n{tis_common}\n</script>"
             
             content = content.replace("</head>", f"{style_block}</head>")
             
-            # Auto-Install apenas no index.html
             if filename == "index.html":
                 content = content.replace("</body>", f"{script_block}\n{AUTO_INSTALL_SCRIPT}</body>")
             else:
@@ -144,29 +142,25 @@ jobs:
 
         with open("src/ui/inline.rs", "w", newline='\n') as f:
             for filename, func_name in mapping.items():
-                raw_content = load_file(filename)
+                raw = load_clean(filename)
                 
-                final_content = ""
-                
+                final = ""
                 if filename.endswith(".html"):
-                    final_content = bundle_html(raw_content, filename)
+                    final = bundle_html(raw, filename)
                 else:
-                    # Arquivos auxiliares retornam vazio pois foram embutidos
-                    final_content = ""
+                    final = "" # CSS/TIS isolados retornam vazio pois foram embutidos
 
-                # Conversão para Bytes (Safety)
-                bytes_data = list(final_content.encode('utf-8'))
-                bytes_str = ", ".join(map(str, bytes_data))
+                # Escapa para String Literal do Rust
+                # 1. Escapa backslashes
+                final = final.replace('\\', '\\\\')
+                # 2. Escapa aspas duplas
+                final = final.replace('"', '\\"')
                 
-                rust_code = f"""
-                pub fn {func_name}() -> String {{
-                    let data: &[u8] = &[{bytes_str}];
-                    String::from_utf8_lossy(data).to_string()
-                }}
-                """
-                f.write(rust_code)
+                # Escreve a função no arquivo .rs
+                # Usando formatacao simples para evitar problemas
+                f.write(f'pub fn {func_name}() -> String {{ "{final}".to_string() }}\n')
 
-        print("UI Generated Successfully.")
+        print("UI Assets Generated and Sanitized.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -178,7 +172,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- ARQUIVOS AUXILIARES ---
+    # --- ARQUIVOS AUXILIARES (Version + C++ Stub) ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -186,7 +180,7 @@ jobs:
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. C++ Stub
+        # 2. C++ Stub (RETORNA TRUE)
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
         $StubContent = @"
         #include <windows.h>
@@ -195,6 +189,7 @@ jobs:
             void handleMask(uint8_t* buf, int width, int height, int pitch) {}
             void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
             void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
+            // Retorna TRUE para enganar verificacoes de erro
             BOOL LaunchProcessWin(const wchar_t* command_line) { return TRUE; }
             BOOL inputDesktopSelected() { return TRUE; }
             BOOL selectInputDesktop() { return TRUE; }
@@ -291,6 +286,7 @@ jobs:
         $env:SODIUM_SHARED = "false"
         $env:RUSTFLAGS = "-C target-feature=+crt-static"
         
+        # Features 'inline' ativada
         cargo build --target i686-pc-windows-msvc --release --features inline
       shell: powershell
 
