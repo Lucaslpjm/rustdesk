@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Logic Fix v31)
+name: Build Saurus Legacy (32-bit Final Native v32)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
       shell: powershell
 
-    # --- SETUP LIBSODIUM MANUAL ---
+    # --- SETUP LIBSODIUM ---
     - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
@@ -76,36 +76,26 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (CORREÇÃO DE LOOP v31) ---
-    - name: Generate UI Assets (Correct Loop)
+    # --- PATCH UI FILES E GERAÇÃO DE INLINE NATIVO ---
+    - name: Patch UI Files & Generate Native Inline
       shell: python
       run: |
         import os
-        import re
 
-        if not os.path.exists("src/ui"):
-            os.makedirs("src/ui")
-
-        # MAPA: Nome_da_Funcao_Rust -> Nome_do_Arquivo_Real
-        mapping = { 
-            "get_index": "index.html", 
-            "get_chatbox": "chatbox.html", 
-            "get_cm": "cm.html", 
-            "get_install": "install.html", 
-            "get_remote": "remote.html",
-            "get_css_common": "common.css",
-            "get_css_index": "index.css",
-            "get_tis_common": "common.tis"
+        # 1. Definições de Injeção
+        VISIBILITY_CSS = """
+        html, body, div, p, span, h1, h2, h3 { 
+            background-color: #FFFFFF; 
+            color: #000000; 
+            font-family: "Segoe UI", sans-serif; 
         }
+        """
 
-        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
-        
-        # Script de Auto-Instalação
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
-            self.timer(1500, function() {
+            self.timer(2000, function() {
                try { view.install_me(true); } catch(e) {}
                return false; 
             });
@@ -113,56 +103,52 @@ jobs:
         </script>
         """
 
-        def load_clean(fname):
-            candidates = [f"src/ui/{fname}", f"html/{fname}", fname]
-            for p in candidates:
-                if os.path.exists(p):
-                    with open(p, "rb") as f:
-                        # Decodifica e remove CR para evitar erro "bare CR"
-                        return f.read().decode('utf-8', errors='ignore').replace('\r', '')
-            return ""
+        # 2. Patch nos arquivos físicos (src/ui/...)
+        if not os.path.exists("src/ui"):
+            os.makedirs("src/ui")
 
-        def bundle_html(content, filename):
-            # Limpa imports legados
-            content = re.sub(r'@import\s+url\(.*?\);', '', content)
-            content = re.sub(r'include\s+".*?";', '', content)
-
-            css_common = load_clean("common.css")
-            css_index = load_clean("index.css")
-            tis_common = load_clean("common.tis")
-
-            style_block = f"<style>{VISIBILITY_CSS}\n{css_common}\n{css_index}</style>"
-            script_block = f"<script type='text/tiscript'>\n{tis_common}\n</script>"
-            
-            content = content.replace("</head>", f"{style_block}</head>")
-            
-            if filename == "index.html":
-                content = content.replace("</body>", f"{script_block}\n{AUTO_INSTALL_SCRIPT}</body>")
-            else:
-                content = content.replace("</body>", f"{script_block}</body>")
-            
-            return content
-
-        with open("src/ui/inline.rs", "w", newline='\n') as f:
-            # CORRECAO V31: A ordem de iteracao estava errada antes
-            # Agora: func_name = "get_index", filename = "index.html"
-            for func_name, filename in mapping.items():
-                raw = load_clean(filename)
+        def patch_file(filename, append_head=None, append_body=None):
+            path = f"src/ui/{filename}"
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
                 
-                final = ""
-                if filename.endswith(".html"):
-                    final = bundle_html(raw, filename)
-                else:
-                    # CSS/TIS isolados retornam vazio pois foram embutidos no HTML
-                    final = "" 
-
-                # Escape para String Literal do Rust
-                final = final.replace('\\', '\\\\').replace('"', '\\"')
+                if append_head:
+                    content = content.replace("</head>", f"<style>{append_head}</style></head>")
+                if append_body:
+                    content = content.replace("</body>", f"{append_body}</body>")
                 
-                # Gera a funcao Rust valida
-                f.write(f'pub fn {func_name}() -> String {{ "{final}".to_string() }}\n')
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"Patched {filename}")
 
-        print("UI Assets Generated Correctly.")
+        # Aplica os patches
+        patch_file("index.html", append_head=VISIBILITY_CSS, append_body=AUTO_INSTALL_SCRIPT)
+        patch_file("common.css", append_head=None, append_body=VISIBILITY_CSS) # Append no final do CSS
+        
+        # Garante que todos os arquivos existam para o compilador não falhar
+        files_to_ensure = ["index.html", "chatbox.html", "cm.html", "install.html", "remote.html", "common.css", "index.css", "common.tis"]
+        for fname in files_to_ensure:
+            if not os.path.exists(f"src/ui/{fname}"):
+                with open(f"src/ui/{fname}", "w") as f: f.write("")
+
+        # 3. Gerar inline.rs NATIVO (Usando include_str!)
+        # Isso evita erros de string mal formatada e tela branca
+        rust_content = """
+        pub fn get_index() -> String { include_str!("index.html").to_string() }
+        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
+        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
+        pub fn get_install() -> String { include_str!("install.html").to_string() }
+        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
+        pub fn get_css_common() -> String { include_str!("common.css").to_string() }
+        pub fn get_css_index() -> String { include_str!("index.css").to_string() }
+        pub fn get_tis_common() -> String { include_str!("common.tis").to_string() }
+        """
+
+        with open("src/ui/inline.rs", "w", encoding="utf-8") as f:
+            f.write(rust_content)
+        
+        print("UI Native Inline generated.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -174,7 +160,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- ARQUIVOS AUXILIARES (Version + C++ Stub) ---
+    # --- ARQUIVOS AUXILIARES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -245,7 +231,6 @@ jobs:
         $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
         
-        # Clone recursivo
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         git fetch --all --tags
