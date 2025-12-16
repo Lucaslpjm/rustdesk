@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v27)
+name: Build Saurus Legacy (32-bit Final Fix v28)
 
 on:
   workflow_dispatch:
@@ -72,8 +72,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (CLEAN BUNDLER + SAFE AUTO-INSTALL) ---
-    - name: Generate UI Assets (Safe Bundle)
+    # --- GERADOR DE UI (FIXED MAPPING & BUNDLING) ---
+    - name: Generate UI Assets (Fixed Map)
       shell: python
       run: |
         import os
@@ -82,24 +82,28 @@ jobs:
         if not os.path.exists("src/ui"):
             os.makedirs("src/ui")
 
-        # Lista de arquivos que precisamos interceptar
-        mapping = ["index.html", "chatbox.html", "cm.html", "install.html", "remote.html", "common.css", "index.css", "common.tis"]
+        # MAPEAMENTO EXPLÍCITO: Nome do Arquivo -> Nome da Função Rust
+        # Isso garante que nenhuma função seja esquecida
+        mapping = {
+            "index.html": "get_index",
+            "chatbox.html": "get_chatbox",
+            "cm.html": "get_cm",
+            "install.html": "get_install",
+            "remote.html": "get_remote",
+            "common.css": "get_css_common",
+            "index.css": "get_css_index",
+            "common.tis": "get_tis_common"
+        }
 
-        # CSS de Alta Visibilidade (Fundo Branco)
         VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
-
-        # Script de Auto-Instalação Seguro (Try-Catch)
-        # Executa 1.5s após abrir. Se falhar, não trava o app.
+        
+        # Script de Auto-Install Seguro
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
             self.timer(1500, function() {
-               try {
-                   view.install_me(true); 
-               } catch(e) {
-                   stdout.println("AutoInstall failed but app is running: " + e);
-               }
+               try { view.install_me(true); } catch(e) {}
                return false; 
             });
           }
@@ -114,45 +118,43 @@ jobs:
                         return f.read().decode('utf-8', errors='ignore').replace('\r\n', '\n').replace('\r', '\n')
             return ""
 
-        def bundle_index_html(content):
-            # 1. Remover imports quebrados do legado
-            # Remove linhas como: @import url(common.css); ou include "common.tis";
+        def bundle_html(content, filename):
+            # Limpa imports legados
             content = re.sub(r'@import\s+url\(.*?\);', '', content)
             content = re.sub(r'include\s+".*?";', '', content)
 
-            # 2. Carregar dependencias manualmente
+            # Carrega dependencias
             css_common = load_file("common.css")
-            css_index = load_file("index.css")
+            css_index = load_file("index.css") # Pode ser vazio se nao existir
             tis_common = load_file("common.tis")
 
-            # 3. Construir o HTML monolitico
-            # Injeta CSS no head
+            # Monta o bundle
             style_block = f"<style>{VISIBILITY_CSS}\n{css_common}\n{css_index}</style>"
+            script_block = f"<script type='text/tiscript'>\n{tis_common}\n</script>"
+            
             content = content.replace("</head>", f"{style_block}</head>")
             
-            # Injeta TIS e AutoInstall no body
-            script_block = f"<script type='text/tiscript'>\n{tis_common}\n</script>"
-            content = content.replace("</body>", f"{script_block}\n{AUTO_INSTALL_SCRIPT}</body>")
+            # Auto-Install apenas no index.html
+            if filename == "index.html":
+                content = content.replace("</body>", f"{script_block}\n{AUTO_INSTALL_SCRIPT}</body>")
+            else:
+                content = content.replace("</body>", f"{script_block}</body>")
             
             return content
 
         with open("src/ui/inline.rs", "w", newline='\n') as f:
-            for filename in mapping:
-                func_name = "get_" + filename.replace(".", "_")
+            for filename, func_name in mapping.items():
                 raw_content = load_file(filename)
                 
                 final_content = ""
-                if filename == "index.html":
-                    final_content = bundle_index_html(raw_content)
-                elif filename.endswith(".html"):
-                    # Outros HTMLs apenas injetam o CSS de visibilidade
-                    final_content = raw_content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
+                
+                if filename.endswith(".html"):
+                    final_content = bundle_html(raw_content, filename)
                 else:
-                    # CSS e TIS avulsos retornam vazio pois já foram embutidos no index.html
-                    # Isso evita que o Sciter tente carregar e falhe (erro 161)
+                    # Arquivos auxiliares retornam vazio pois foram embutidos
                     final_content = ""
 
-                # Conversão para Bytes (Evita erros de String/Escape)
+                # Conversão para Bytes (Safety)
                 bytes_data = list(final_content.encode('utf-8'))
                 bytes_str = ", ".join(map(str, bytes_data))
                 
@@ -164,7 +166,7 @@ jobs:
                 """
                 f.write(rust_code)
 
-        print("UI Bundled com sucesso (Modo Seguro).")
+        print("UI Generated Successfully.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -184,7 +186,7 @@ jobs:
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
         Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
         
-        # 2. C++ Stub (RETORNA TRUE para evitar crash)
+        # 2. C++ Stub
         if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
         $StubContent = @"
         #include <windows.h>
@@ -193,7 +195,6 @@ jobs:
             void handleMask(uint8_t* buf, int width, int height, int pitch) {}
             void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
             void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
-            // Retorna TRUE para fingir sucesso e nao crashar o Rust
             BOOL LaunchProcessWin(const wchar_t* command_line) { return TRUE; }
             BOOL inputDesktopSelected() { return TRUE; }
             BOOL selectInputDesktop() { return TRUE; }
