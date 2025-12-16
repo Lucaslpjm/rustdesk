@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Binary v34)
+name: Build Saurus Legacy (32-bit Final v35)
 
 on:
   workflow_dispatch:
@@ -76,24 +76,37 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- UI MIRROR GENERATOR (Binary Embed Strategy) ---
-    - name: Generate Native UI Mirror
+    # --- GERADOR DE UI (SANITIZAÇÃO EXTREMA v35) ---
+    - name: Generate UI Assets (String Literal Mode)
       shell: python
       run: |
         import os
-        import shutil
+        import re
 
-        # Configurações de Injeção
-        # 1. CSS Global (Fundo branco forçado)
-        VISIBILITY_CSS = "\nhtml, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }\n"
-        
-        # 2. Script de Auto-Instalação (Tenta instalar silenciosamente)
+        if not os.path.exists("src/ui"):
+            os.makedirs("src/ui")
+
+        mapping = { 
+            "get_index": "index.html", 
+            "get_chatbox": "chatbox.html", 
+            "get_cm": "cm.html", 
+            "get_install": "install.html", 
+            "get_remote": "remote.html",
+            "get_css_common": "common.css",
+            "get_css_index": "index.css",
+            "get_tis_common": "common.tis"
+        }
+
+        # CSS para forçar visibilidade e fundo branco
+        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
+
+        # Auto-Install com 10 segundos de atraso para debug
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
-            // Aguarda 1.5s para garantir que o UI carregou antes de pedir admin
-            self.timer(1500, function() {
+            // Atraso de 10s para voce ver a tela antes de fechar
+            self.timer(10000, function() {
                try { view.install_me(true); } catch(e) {}
                return false; 
             });
@@ -101,81 +114,72 @@ jobs:
         </script>
         """
 
-        # Garante diretório de destino
-        target_dir = "src/ui"
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
+        def load_clean(fname):
+            candidates = [f"src/ui/{fname}", f"html/{fname}", fname]
+            for p in candidates:
+                if os.path.exists(p):
+                    with open(p, "rb") as f:
+                        # Decodifica, remove BOM e remove CR
+                        return f.read().decode('utf-8-sig', errors='ignore').replace('\r', '')
+            return ""
 
-        # Mapa de arquivos originais para serem processados
-        # Se não existirem na raiz (html/), tentamos achar ou criar vazio
-        files_map = [
-            "index.html", "chatbox.html", "cm.html", "install.html", 
-            "remote.html", "common.css", "index.css", "common.tis"
-        ]
+        def escape_for_rust(content):
+            # Escapa backslash primeiro
+            content = content.replace('\\', '\\\\')
+            # Escapa aspas duplas
+            content = content.replace('"', '\\"')
+            # Escapa newlines para virar uma linha só no Rust
+            content = content.replace('\n', '\\n')
+            return content
 
-        def read_source(fname):
-            # Tenta ler da pasta html/ ou raiz
-            candidates = [f"html/{fname}", fname, f"src/ui/{fname}"]
-            for path in candidates:
-                if os.path.exists(path):
-                    with open(path, "rb") as f:
-                        return f.read().decode("utf-8", errors="ignore")
-            return "" # Retorna vazio se não achar, para não quebrar build
+        def bundle_html(content, filename):
+            # Limpeza basica de imports
+            content = re.sub(r'@import\s+url\(.*?\);', '', content)
+            content = re.sub(r'include\s+".*?";', '', content)
 
-        for fname in files_map:
-            content = read_source(fname)
+            # Carrega dependencias
+            css_c = load_clean("common.css")
+            css_i = load_clean("index.css")
+            tis_c = load_clean("common.tis")
+
+            # Monta blocos
+            style_block = f"<style>{VISIBILITY_CSS} {css_c} {css_i}</style>"
+            script_block = f"<script type='text/tiscript'>{tis_c}</script>"
             
-            # --- MODIFICAÇÕES SEGURAS ---
-            # Em vez de substituir tudo, ANEXAMOS ao final.
-            # O Sciter lê em cascata, então o último estilo ganha.
+            # Injeta no HTML
+            if "</head>" in content:
+                content = content.replace("</head>", f"{style_block}</head>")
+            else:
+                content = style_block + content
+
+            if "</body>" in content:
+                # Adiciona script comum
+                replacement = f"{script_block}</body>"
+                # Se for index.html, adiciona o auto-install
+                if filename == "index.html":
+                    replacement = f"{script_block}{AUTO_INSTALL_SCRIPT}</body>"
+                content = content.replace("</body>", replacement)
             
-            if fname.endswith(".css"):
-                content += VISIBILITY_CSS
-            
-            if fname == "index.html":
-                # Injeta o script de instalação antes de fechar o body, se existir
-                if "</body>" in content:
-                    content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
+            return content
+
+        with open("src/ui/inline.rs", "w", newline='\n') as f:
+            for func_name, filename in mapping.items():
+                raw = load_clean(filename)
+                
+                final_content = ""
+                if filename.endswith(".html"):
+                    final_content = bundle_html(raw, filename)
+                elif filename == "common.css":
+                    final_content = VISIBILITY_CSS + raw # Fallback para CSS isolado
                 else:
-                    # Se não tiver body explícito, adiciona no fim
-                    content += AUTO_INSTALL_SCRIPT
-            
-            # Se for HTML, garantimos que o CSS global também seja injetado no head
-            if fname.endswith(".html"):
-                if "</head>" in content:
-                    content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
+                    final_content = "" # JS/CSS isolados retornam vazio pois foram embutidos
 
-            # Salva o arquivo modificado na pasta src/ui
-            with open(f"{target_dir}/{fname}", "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-            print(f"Processed and saved: {target_dir}/{fname}")
-
-        # --- GERAÇÃO DO RUST (MODO BINÁRIO) ---
-        # Usamos include_bytes! para garantir que o Rust leia o arquivo exato que salvamos acima.
-        # String::from_utf8_lossy converte os bytes de volta para string Rust de forma segura.
+                # Escapa TUDO para garantir que vire uma string válida do Rust
+                escaped = escape_for_rust(final_content)
+                
+                f.write(f'pub fn {func_name}() -> String {{ "{escaped}".to_string() }}\n')
         
-        rust_code = """
-        // Helper macro para carregar bytes e converter para String
-        macro_rules! load_asset {
-            ($fname:expr) => {
-                String::from_utf8_lossy(include_bytes!($fname)).to_string()
-            };
-        }
-
-        pub fn get_index() -> String { load_asset!("index.html") }
-        pub fn get_chatbox() -> String { load_asset!("chatbox.html") }
-        pub fn get_cm() -> String { load_asset!("cm.html") }
-        pub fn get_install() -> String { load_asset!("install.html") }
-        pub fn get_remote() -> String { load_asset!("remote.html") }
-        pub fn get_css_common() -> String { load_asset!("common.css") }
-        pub fn get_css_index() -> String { load_asset!("index.css") }
-        pub fn get_tis_common() -> String { load_asset!("common.tis") }
-        """
-
-        with open(f"{target_dir}/inline.rs", "w", encoding="utf-8") as f:
-            f.write(rust_code)
-
-        print("inline.rs generated with binary embedding strategy.")
+        print("UI Assets Generated (Safe String Mode).")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -187,8 +191,8 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- HELPER FILES ---
-    - name: Create Helper Files
+    # --- ARQUIVOS AUXILIARES ---
+    - name: Create Helper Files (Src)
       shell: powershell
       run: |
         $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
@@ -258,6 +262,7 @@ jobs:
         $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
         
+        # Clone recursivo
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
         cd C:\vcpkg
         git fetch --all --tags
