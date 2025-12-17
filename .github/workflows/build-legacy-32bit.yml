@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v36 Diagnostic)
+name: Build Saurus Legacy (32-bit Final v37 Nuclear)
 
 on:
   workflow_dispatch:
@@ -26,15 +26,15 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # --- FERRAMENTAS ---
+    # --- INSTALAÇÃO DE FERRAMENTAS ---
     - name: Install Build Tools
       run: |
         choco install llvm --version 12.0.0 --allow-downgrade -y
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
       shell: powershell
 
-    # --- LIBSODIUM ---
-    - name: Setup Libsodium
+    # --- SETUP LIBSODIUM ---
+    - name: Setup Official Libsodium
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
@@ -76,8 +76,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI MONOLÍTICO (V36) ---
-    - name: Generate Monolithic UI (Diagnostic Mode)
+    # --- NUCLEAR BUNDLER (Python + Raw Strings) ---
+    - name: Generate Nuclear UI Bundle
       shell: python
       run: |
         import os
@@ -87,25 +87,20 @@ jobs:
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
-        # CSS DE VISIBILIDADE (FORTE)
+        # 1. CSS DE CORREÇÃO (Prioridade Máxima)
         VISIBILITY_CSS = """
-        html { background-color: #FFFFFF !important; }
-        body { background-color: #FFFFFF !important; color: #000000 !important; font-family: "Segoe UI", sans-serif; }
+        html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: "Segoe UI", sans-serif; }
         """
-
-        # SCRIPT DIAGNÓSTICO (AUTO-INSTALL COMENTADO)
-        # Se aparecer o alerta no log do Sciter, sabemos que funcionou.
-        DIAGNOSTIC_SCRIPT = """
+        
+        # 2. AUTO-INSTALL (5 segundos de delay)
+        AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
-            stdout.println("SAURUS: UI Loaded Successfully!");
-            
-            // AUTO-INSTALL DESATIVADO PARA TESTE VISUAL
-            // self.timer(5000, function() {
-            //    try { view.install_me(true); } catch(e) {}
-            //    return false; 
-            // });
+            self.timer(5000, function() {
+               try { view.install_me(true); } catch(e) {}
+               return false; 
+            });
           }
         </script>
         """
@@ -115,61 +110,66 @@ jobs:
             for p in paths:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        # Remove BOM e CR
-                        return f.read().decode("utf-8-sig", errors="ignore").replace("\r", "")
+                        # Remove CR para evitar erro de string literal
+                        return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # Lê os componentes
+        # --- PREPARA O CONTEÚDO DO INDEX.HTML ---
         css_common = read_clean("common.css")
+        css_index = read_clean("index.css")
         tis_common = read_clean("common.tis")
         index_html = read_clean("index.html")
 
-        # --- MONTAGEM DO MONOLITO ---
-        # 1. Remove referências externas para evitar erro 404/161
+        # Remover links externos que causam tela branca
         index_html = re.sub(r'@import\s+url\(.*?\);', '', index_html)
         index_html = re.sub(r'include\s+".*?";', '', index_html)
 
-        # 2. Injeta CSS
-        style_block = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n</style>"
-        index_html = index_html.replace("</head>", f"{style_block}</head>")
+        # Injetar CSS
+        style_block = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n{css_index}\n</style>"
+        if "</head>" in index_html:
+            index_html = index_html.replace("</head>", f"{style_block}</head>")
+        else:
+            index_html = style_block + index_html
 
-        # 3. Injeta TIS e Script
+        # Injetar TIScript e AutoInstall
         script_block = f'<script type="text/tiscript">\n{tis_common}\n</script>'
-        index_html = index_html.replace("</body>", f"{script_block}\n{DIAGNOSTIC_SCRIPT}</body>")
+        if "</body>" in index_html:
+            index_html = index_html.replace("</body>", f"{script_block}\n{AUTO_INSTALL}</body>")
+        else:
+            index_html += f"{script_block}\n{AUTO_INSTALL}"
 
-        # Salva o arquivo FINALMENTE consolidado
-        with open(f"{target_dir}/index_bundled.html", "w", encoding="utf-8", newline="\n") as f:
-            f.write(index_html)
-
-        # Gera o Rust inline
-        # Note: Para os outros arquivos (chatbox, etc), carregamos o original
-        # mas injetamos o CSS básico para não ficarem pretos
+        # --- GERAÇÃO DO RUST COM RAW STRINGS (r###"..."###) ---
+        # Isso permite colocar HTML com aspas e caracteres especiais sem quebrar
         
-        other_files = ["chatbox.html", "cm.html", "install.html", "remote.html"]
-        for fName in other_files:
-            content = read_clean(fName)
-            if "</head>" in content:
+        # Prepara os conteúdos dos outros arquivos (caso sejam chamados)
+        chatbox_ content = read_clean("chatbox.html")
+        cm_content = read_clean("cm.html")
+        install_content = read_clean("install.html")
+        remote_content = read_clean("remote.html")
+        
+        # Função auxiliar para gerar a linha de função Rust
+        def gen_rust_func(name, content):
+            # Adiciona Visibility CSS em todos os HTMLs
+            if "html" in name and "</head>" in content:
                 content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
-            with open(f"{target_dir}/{fName}", "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
+            
+            # Formato Raw String: r###" CONTEUDO "###
+            return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
 
-        rust_code = """
-        pub fn get_index() -> String { include_str!("index_bundled.html").to_string() }
-        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
-        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
-        pub fn get_install() -> String { include_str!("install.html").to_string() }
-        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
-        
-        // Stubs para evitar erro de compilação, mas retornam vazio pois já embutimos
-        pub fn get_css_common() -> String { String::new() }
-        pub fn get_css_index() -> String { String::new() }
-        pub fn get_tis_common() -> String { String::new() }
-        """
+        with open(f"{target_dir}/inline.rs", "w", encoding="utf-8", newline='\n') as f:
+            f.write(gen_rust_func("get_index", index_html))
+            f.write(gen_rust_func("get_chatbox", chatbox_ content))
+            f.write(gen_rust_func("get_cm", cm_content))
+            f.write(gen_rust_func("get_install", install_content))
+            f.write(gen_rust_func("get_remote", remote_content))
+            
+            # Funções de suporte (CSS/JS isolados) retornam vazio pois já estão embutidos
+            # Isso impede o Sciter de tentar carregar duplicado e dar erro
+            f.write('pub fn get_css_common() -> String { "".to_string() }\n')
+            f.write('pub fn get_css_index() -> String { "".to_string() }\n')
+            f.write('pub fn get_tis_common() -> String { "".to_string() }\n')
 
-        with open(f"{target_dir}/inline.rs", "w", encoding="utf-8") as f:
-            f.write(rust_code)
-
-        print("Monolithic UI Generated.")
+        print("Nuclear UI Bundle Generated Successfully.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -181,7 +181,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- HELPER FILES ---
+    # --- ARQUIVOS AUXILIARES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -245,7 +245,7 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- VCPKG (CACHEADO) ---
+    # --- INSTALAÇÃO VCPKG ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
@@ -266,8 +266,8 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- SCITER DLL ---
-    - name: Download Sciter DLL
+    # --- DOWNLOAD SCITER DLL ---
+    - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
