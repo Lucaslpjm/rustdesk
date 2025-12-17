@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v38 Fixed)
+name: Build Saurus Legacy (32-bit Final Debug v39)
 
 on:
   workflow_dispatch:
@@ -26,15 +26,15 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # --- INSTALAÇÃO DE FERRAMENTAS ---
+    # --- FERRAMENTAS ---
     - name: Install Build Tools
       run: |
         choco install llvm --version 12.0.0 --allow-downgrade -y
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
       shell: powershell
 
-    # --- SETUP LIBSODIUM ---
-    - name: Setup Official Libsodium
+    # --- LIBSODIUM ---
+    - name: Setup Libsodium
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
@@ -76,8 +76,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- NUCLEAR BUNDLER (Python + Raw Strings) ---
-    - name: Generate Nuclear UI Bundle
+    # --- GERADOR DE UI (CORRIGIDO + DEBUG) ---
+    - name: Generate Nuclear UI Bundle (Fixed)
       shell: python
       run: |
         import os
@@ -87,18 +87,24 @@ jobs:
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
-        # 1. CSS DE CORREÇÃO
+        # CSS DE VISIBILIDADE
         VISIBILITY_CSS = """
         html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: "Segoe UI", sans-serif; }
         """
         
-        # 2. AUTO-INSTALL (5 segundos de delay)
+        # AUTO-INSTALL (Com log para debug visual se possivel)
         AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
+            stdout.println("SAURUS: UI Ready function called");
             view.state = View.WINDOW_SHOWN;
             self.timer(5000, function() {
-               try { view.install_me(true); } catch(e) {}
+               try { 
+                  stdout.println("SAURUS: Attempting AutoInstall");
+                  view.install_me(true); 
+               } catch(e) {
+                  stdout.println("SAURUS: AutoInstall Error " + e);
+               }
                return false; 
             });
           }
@@ -110,66 +116,61 @@ jobs:
             for p in paths:
                 if os.path.exists(p):
                     with open(p, "rb") as f:
-                        # Remove CR para evitar erro de string literal
-                        return f.read().decode("utf-8", errors="ignore").replace("\r", "")
+                        return f.read().decode("utf-8-sig", errors="ignore").replace("\r", "")
             return ""
 
-        # --- PREPARA O CONTEÚDO DO INDEX.HTML ---
+        # PREPARA O INDEX.HTML (MONOLITO)
         css_common = read_clean("common.css")
         css_index = read_clean("index.css")
         tis_common = read_clean("common.tis")
         index_html = read_clean("index.html")
 
-        # Remover links externos que causam tela branca
+        # Remove imports externos
         index_html = re.sub(r'@import\s+url\(.*?\);', '', index_html)
         index_html = re.sub(r'include\s+".*?";', '', index_html)
 
-        # Injetar CSS
+        # Injeta CSS
         style_block = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n{css_index}\n</style>"
         if "</head>" in index_html:
             index_html = index_html.replace("</head>", f"{style_block}</head>")
         else:
             index_html = style_block + index_html
 
-        # Injetar TIScript e AutoInstall
+        # Injeta JS
         script_block = f'<script type="text/tiscript">\n{tis_common}\n</script>'
         if "</body>" in index_html:
             index_html = index_html.replace("</body>", f"{script_block}\n{AUTO_INSTALL}</body>")
         else:
             index_html += f"{script_block}\n{AUTO_INSTALL}"
 
-        # --- GERAÇÃO DO RUST ---
-        
-        # Prepara os conteúdos dos outros arquivos
-        # CORREÇÃO AQUI: removido o espaço no nome da variável
+        # Carrega outros arquivos
+        # CORRECAO: Variavel corrigida aqui
         chatbox_content = read_clean("chatbox.html")
         cm_content = read_clean("cm.html")
         install_content = read_clean("install.html")
         remote_content = read_clean("remote.html")
         
         def gen_rust_func(name, content):
-            # Adiciona Visibility CSS em todos os HTMLs
+            # Adiciona CSS de visibilidade nos outros HTMLs tambem
             if "html" in name and "</head>" in content:
                 content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
             
-            # Formato Raw String do Rust: r###" ... "###
-            # Isso permite aspas e caracteres especiais sem escape
+            # RAW STRING RUST (r###"..."###)
             return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
 
         with open(f"{target_dir}/inline.rs", "w", encoding="utf-8", newline='\n') as f:
             f.write(gen_rust_func("get_index", index_html))
-            # CORREÇÃO AQUI: usando a variável corrigida
             f.write(gen_rust_func("get_chatbox", chatbox_content))
             f.write(gen_rust_func("get_cm", cm_content))
             f.write(gen_rust_func("get_install", install_content))
             f.write(gen_rust_func("get_remote", remote_content))
             
-            # Funções de suporte vazias
+            # Stubs
             f.write('pub fn get_css_common() -> String { "".to_string() }\n')
             f.write('pub fn get_css_index() -> String { "".to_string() }\n')
             f.write('pub fn get_tis_common() -> String { "".to_string() }\n')
 
-        print("Nuclear UI Bundle Generated Successfully.")
+        print("Nuclear UI Bundle Generated (Fixed Variable).")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -181,7 +182,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- ARQUIVOS AUXILIARES ---
+    # --- HELPER FILES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -303,6 +304,13 @@ jobs:
         Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
         Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
         Write-Host "Pacote Legacy Criado!"
+
+    # --- UPLOAD PARA DEBUG (SALVA O CÓDIGO FONTE MODIFICADO) ---
+    - name: Upload UI Source (Debug)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saurus-UI-Source-Debug
+        path: src/ui/inline.rs
 
     - name: Upload Legacy
       uses: actions/upload-artifact@v4
