@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v37 Nuclear)
+name: Build Saurus Legacy (32-bit Final v38 Fixed)
 
 on:
   workflow_dispatch:
@@ -87,7 +87,7 @@ jobs:
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
-        # 1. CSS DE CORREÇÃO (Prioridade Máxima)
+        # 1. CSS DE CORREÇÃO
         VISIBILITY_CSS = """
         html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: "Segoe UI", sans-serif; }
         """
@@ -138,33 +138,33 @@ jobs:
         else:
             index_html += f"{script_block}\n{AUTO_INSTALL}"
 
-        # --- GERAÇÃO DO RUST COM RAW STRINGS (r###"..."###) ---
-        # Isso permite colocar HTML com aspas e caracteres especiais sem quebrar
+        # --- GERAÇÃO DO RUST ---
         
-        # Prepara os conteúdos dos outros arquivos (caso sejam chamados)
-        chatbox_ content = read_clean("chatbox.html")
+        # Prepara os conteúdos dos outros arquivos
+        # CORREÇÃO AQUI: removido o espaço no nome da variável
+        chatbox_content = read_clean("chatbox.html")
         cm_content = read_clean("cm.html")
         install_content = read_clean("install.html")
         remote_content = read_clean("remote.html")
         
-        # Função auxiliar para gerar a linha de função Rust
         def gen_rust_func(name, content):
             # Adiciona Visibility CSS em todos os HTMLs
             if "html" in name and "</head>" in content:
                 content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
             
-            # Formato Raw String: r###" CONTEUDO "###
+            # Formato Raw String do Rust: r###" ... "###
+            # Isso permite aspas e caracteres especiais sem escape
             return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
 
         with open(f"{target_dir}/inline.rs", "w", encoding="utf-8", newline='\n') as f:
             f.write(gen_rust_func("get_index", index_html))
-            f.write(gen_rust_func("get_chatbox", chatbox_ content))
+            # CORREÇÃO AQUI: usando a variável corrigida
+            f.write(gen_rust_func("get_chatbox", chatbox_content))
             f.write(gen_rust_func("get_cm", cm_content))
             f.write(gen_rust_func("get_install", install_content))
             f.write(gen_rust_func("get_remote", remote_content))
             
-            # Funções de suporte (CSS/JS isolados) retornam vazio pois já estão embutidos
-            # Isso impede o Sciter de tentar carregar duplicado e dar erro
+            # Funções de suporte vazias
             f.write('pub fn get_css_common() -> String { "".to_string() }\n')
             f.write('pub fn get_css_index() -> String { "".to_string() }\n')
             f.write('pub fn get_tis_common() -> String { "".to_string() }\n')
