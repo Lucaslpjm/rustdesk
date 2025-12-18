@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v50 Recursive)
+name: Build Saurus Legacy (32-bit Final v51 Smart Filter)
 
 on:
   workflow_dispatch:
@@ -76,8 +76,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (RECURSIVE INLINER v50) ---
-    - name: Recursive UI Inliner & AutoInstall
+    # --- GERADOR DE UI (SMART FILTER v51) ---
+    - name: Smart UI Inliner & AutoInstall
       shell: python
       run: |
         import os
@@ -107,12 +107,8 @@ jobs:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 4. Processador Recursivo de Includes
-        # Isso resolve msgbox.tis dentro de common.tis, etc.
+        # 4. Processador Recursivo de Includes (Com Filtro Inteligente)
         def resolve_includes(content, root_dir):
-            # Regex para CSS: @import url(nome.css);
-            # Regex para JS: include "nome.tis";
-            
             # Limite de iterações para evitar loop infinito
             for _ in range(5):
                 has_changes = False
@@ -120,10 +116,13 @@ jobs:
                 # Resolver CSS Imports
                 def replace_css(match):
                     fname = match.group(1)
+                    # IGNORAR RECURSOS REMOTOS OU INTERNOS
+                    if fname.startswith("http") or fname.startswith("//") or fname.startswith("sciter:"):
+                        return match.group(0) # Mantem original
+
                     fpath = os.path.join(root_dir, fname)
                     print(f"  Inlining CSS: {fname}")
                     c = read_file(fpath)
-                    # Se achou conteudo, retorna o conteudo. Se nao, retorna string vazia (remove o import)
                     if c: 
                         nonlocal has_changes
                         has_changes = True
@@ -135,6 +134,11 @@ jobs:
                 # Resolver JS Includes (TIScript)
                 def replace_tis(match):
                     fname = match.group(1)
+                    # CRITICAL FIX: IGNORA 'sciter:' imports (ex: reactor.tis)
+                    if fname.startswith("sciter:"):
+                        print(f"  Skipping internal import: {fname}")
+                        return match.group(0) # Retorna a linha original intacta
+
                     fpath = os.path.join(root_dir, fname)
                     print(f"  Inlining TIS: {fname}")
                     c = read_file(fpath)
@@ -142,7 +146,7 @@ jobs:
                         nonlocal has_changes
                         has_changes = True
                         return c
-                    return ""
+                    return "" # Se não achou arquivo local, remove a linha para evitar erro
 
                 content = re.sub(r'include\s+"(.*?)";', replace_tis, content)
                 
@@ -155,9 +159,13 @@ jobs:
         AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
+            stdout.println("SAURUS: Ready triggered");
             view.state = View.WINDOW_SHOWN;
             self.timer(5000, function() {
-               try { view.install_me(true); } catch(e) {}
+               try { 
+                 stdout.println("SAURUS: Auto-Install Trigger");
+                 view.install_me(true); 
+               } catch(e) {}
                return false; 
             });
           }
@@ -170,10 +178,10 @@ jobs:
             print(f"Processing {target_file}...")
             content = read_file(target_file)
             
-            # Resolve dependencias recursivamente
+            # Resolve dependencias (com proteção para sciter:reactor.tis)
             content = resolve_includes(content, SRC_UI)
             
-            # Injeta CSS de Visibilidade (Fundo Branco)
+            # Injeta CSS de Visibilidade
             if "</head>" in content:
                 content = content.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000000; }</style></head>")
             
@@ -186,7 +194,7 @@ jobs:
             # Salva
             with open(target_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
-            print("index.html fully bundled.")
+            print("index.html successfully bundled (Reactor preserved).")
         else:
             print("CRITICAL: index.html not found!")
 
@@ -209,7 +217,7 @@ jobs:
             rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
             files_mapped.add(fname)
 
-        # Mapeia outros arquivos por segurança (ex: msgbox.tis)
+        # Mapeia outros arquivos para evitar erro 404 no Sciter
         for fname in os.listdir(SRC_UI):
             if fname == "inline.rs" or os.path.isdir(os.path.join(SRC_UI, fname)): continue
             if fname in files_mapped: continue
