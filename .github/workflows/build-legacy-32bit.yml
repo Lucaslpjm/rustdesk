@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v52 Manual Check)
+name: Build Saurus Legacy (32-bit Final v54 Asset Packer)
 
 on:
   workflow_dispatch:
@@ -76,120 +76,134 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (MANUAL CHECK v52) ---
-    - name: Embed UI with Manual Install Button
+    # --- GERADOR DE UI (ASSET PACKER v54) ---
+    - name: Inline Assets and AutoInstall
       shell: python
       run: |
         import os
         import shutil
         import re
 
-        # 1. Configurar Caminhos
+        # Define diretórios
         SRC_UI = "src/ui"
-        HTML_SOURCE = "html"
+        HTML_SOURCE = "html" # Pasta original onde o repo baixa os arquivos
         
-        if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
+        # Cria src/ui se não existir
+        if not os.path.exists(SRC_UI):
+            os.makedirs(SRC_UI)
 
-        # 2. Copiar arquivos fonte
-        print("Copying source files...")
+        # 1. Copia TUDO de html/ para src/ui/
+        print("Copying source files from html/ to src/ui/...")
         if os.path.exists(HTML_SOURCE):
             for item in os.listdir(HTML_SOURCE):
                 s = os.path.join(HTML_SOURCE, item)
                 d = os.path.join(SRC_UI, item)
-                if os.path.isfile(s): shutil.copy2(s, d)
-
-        # 3. Helpers
-        def read_file(path):
-            if os.path.exists(path):
-                with open(path, "rb") as f:
+                if os.path.isfile(s):
+                    shutil.copy2(s, d)
+        
+        # 2. Função para ler arquivos
+        def read_file(fname):
+            # Procura primeiro em SRC_UI
+            fpath = os.path.join(SRC_UI, fname)
+            if os.path.exists(fpath):
+                with open(fpath, "rb") as f:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 4. Processador de Includes (Seguro)
-        def resolve_includes(content, root_dir):
+        # 3. Lógica de "Inlining" (Substituir import pelo conteúdo)
+        def process_content(content):
+            # Loop para resolver imports aninhados (css dentro de css)
             for _ in range(5):
-                has_changes = False
+                changed = False
                 
-                # CSS
-                def replace_css(match):
+                # Substituir CSS (@import url(style.css);)
+                def sub_css(match):
                     fname = match.group(1)
-                    if fname.startswith("http") or fname.startswith("//") or fname.startswith("sciter:"):
-                        return match.group(0)
-                    fpath = os.path.join(root_dir, fname)
-                    c = read_file(fpath)
+                    if fname.startswith("http") or fname.startswith("//") or fname.startswith("sciter"): return match.group(0)
+                    print(f"  Inlining CSS: {fname}")
+                    c = read_file(fname)
                     if c: 
-                        nonlocal has_changes
-                        has_changes = True
-                        return f"/* Inlined {fname} */\n{c}"
+                        nonlocal changed
+                        changed = True
+                        return f"/* {fname} */\n{c}"
                     return ""
                 
-                content = re.sub(r'@import\s+url\((.*?)\);', replace_css, content)
-
-                # JS / TIScript
-                def replace_tis(match):
+                # Substituir TIScript (include "script.tis";)
+                def sub_tis(match):
                     fname = match.group(1)
-                    if fname.startswith("sciter:"): return match.group(0) # Pula reactor
-                    
-                    fpath = os.path.join(root_dir, fname)
-                    c = read_file(fpath)
+                    if fname.startswith("sciter"): return match.group(0) # Não mexe no reactor!
+                    print(f"  Inlining TIS: {fname}")
+                    c = read_file(fname)
                     if c:
-                        nonlocal has_changes
-                        has_changes = True
-                        return f"// Inlined {fname}\n{c}"
+                        nonlocal changed
+                        changed = True
+                        return f"// {fname}\n{c}"
                     return ""
 
-                content = re.sub(r'include\s+"(.*?)";', replace_tis, content)
+                new_content = re.sub(r'@import\s+url\((.*?)\);', sub_css, content)
+                new_content = re.sub(r'include\s+"(.*?)";', sub_tis, new_content)
                 
-                if not has_changes: break
+                if new_content != content:
+                    content = new_content
+                else:
+                    break
             return content
 
-        # 5. BOTÃO MANUAL (Sem timer)
-        # Inserimos um botão visível no topo da página
-        MANUAL_INSTALL_UI = """
-        <div style="background:red; color:white; padding:20px; text-align:center; font-size:20px; cursor:pointer; position:absolute; top:0; left:0; width:100%; z-index:9999;" id="force-install-btn">
-            CLIQUE AQUI PARA INSTALAR (SAURUS)
-        </div>
-        <script type="text/tiscript">
-          $(#force-install-btn).on("click", function() {
-              view.install_me(true);
-          });
-          function self.ready() {
-            view.state = View.WINDOW_SHOWN;
-            stdout.println("UI Loaded. Waiting for click.");
-          }
-        </script>
-        """
-
-        # 6. Processar index.html
-        target_file = os.path.join(SRC_UI, "index.html")
-        if os.path.exists(target_file):
-            print(f"Bundling {target_file}...")
-            content = read_file(target_file)
-            content = resolve_includes(content, SRC_UI)
+        # 4. Processar index.html
+        index_file = os.path.join(SRC_UI, "index.html")
+        if os.path.exists(index_file):
+            print("Processing index.html bundle...")
+            raw_html = read_file("index.html")
             
-            # CSS Básico
-            if "</head>" in content:
-                content = content.replace("</head>", "<style>html, body { background-color: white; }</style></head>")
+            # Resolve os imports
+            bundled_html = process_content(raw_html)
             
-            # Injeta UI Manual
-            if "</body>" in content:
-                content = content.replace("</body>", f"{MANUAL_INSTALL_UI}</body>")
+            # Injeta CSS Global para garantir fundo branco
+            if "</head>" in bundled_html:
+                bundled_html = bundled_html.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000; }</style></head>")
+            
+            # Injeta Auto-Install (Delay 10s para garantir visualização)
+            AUTO_INSTALL = """
+            <script type="text/tiscript">
+              function self.ready() {
+                view.state = View.WINDOW_SHOWN;
+                stdout.println("SAURUS: UI Loaded. Timer started.");
+                self.timer(10000, function() {
+                   try { view.install_me(true); } catch(e) {}
+                   return false; 
+                });
+              }
+            </script>
+            """
+            if "</body>" in bundled_html:
+                bundled_html = bundled_html.replace("</body>", f"{AUTO_INSTALL}</body>")
             else:
-                content += MANUAL_INSTALL_UI
-
-            with open(target_file, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
+                bundled_html += AUTO_INSTALL
             
-            # Debug: Mostra as primeiras linhas para verificar
-            print("--- HEAD OF INDEX.HTML ---")
-            print(content[:500])
-            print("--------------------------")
-        else:
-            print("CRITICAL: index.html not found!")
+            # Salva o index.html "Gordo"
+            with open(index_file, "w", encoding="utf-8", newline="\n") as f:
+                f.write(bundled_html)
+            print("index.html bundled successfully.")
 
-        # 7. Gerar inline.rs
+        # 5. Processar outros HTMLs (Chatbox, etc) para não quebrarem
+        other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
+        for html_name in other_htmls:
+            p = os.path.join(SRC_UI, html_name)
+            if os.path.exists(p):
+                c = read_file(html_name)
+                c = process_content(c) # Inline CSS
+                # Adiciona fundo branco
+                if "</head>" in c:
+                    c = c.replace("</head>", "<style>html { background: #FFF; }</style></head>")
+                with open(p, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(c)
+
+        # 6. Gerar inline.rs (Mapeamento Rust)
+        # Usamos include_bytes! para ler os arquivos que acabamos de modificar/salvar em src/ui
         rust_code = []
-        mandatory_map = {
+        
+        # Arquivos obrigatórios mapeados para funções específicas
+        mandatory = {
             "get_index": "index.html",
             "get_chatbox": "chatbox.html",
             "get_cm": "cm.html",
@@ -200,16 +214,19 @@ jobs:
             "get_tis_common": "common.tis"
         }
         
-        files_mapped = set()
-        for func, fname in mandatory_map.items():
+        processed_files = set()
+        
+        for func, fname in mandatory.items():
+            # Mesmo que o arquivo esteja vazio ou já embutido, a função precisa existir e retornar algo válido
             rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
-            files_mapped.add(fname)
+            processed_files.add(fname)
 
+        # Mapeia qualquer outro arquivo (ex: imagens, outros tis) para funções genéricas
+        # Isso evita que o Sciter falhe se tentar carregar algo dinamicamente
         for fname in os.listdir(SRC_UI):
-            if fname == "inline.rs" or os.path.isdir(os.path.join(SRC_UI, fname)): continue
-            if fname in files_mapped: continue
-            safe_name = "get_" + fname.replace(".", "_").replace("-", "_")
-            rust_code.append(f'pub fn {safe_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
+            if fname not in processed_files and os.path.isfile(os.path.join(SRC_UI, fname)) and fname != "inline.rs":
+                safe_name = "get_" + fname.replace(".", "_").replace("-", "_")
+                rust_code.append(f'pub fn {safe_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
 
         with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(rust_code))
@@ -296,61 +313,4 @@ jobs:
       run: |
         $ErrorActionPreference = "Stop"
         if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
-        git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-        cd C:\vcpkg
-        git fetch --all --tags
-        git checkout 5765d1d644787a28e8d839659345c26915152771
-        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-        .\vcpkg integrate install
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                if ($LASTEXITCODE -eq 0) { $success = $true }
-            } catch { Start-Sleep 15; $retryCount++ }
-        }
-        if (-not $success) { throw "Falha VCPKG" }
-
-    # --- DOWNLOAD SCITER DLL ---
-    - name: Download Sciter DLL (Clone Master)
-      shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path "target\release"
-        if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
-        git clone --depth 1 https://github.com/c-smile/sciter-sdk.git sciter_repo
-        $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
-        if (Test-Path $DllSource) {
-            Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter 32-bit instalada!"
-        } else { throw "DLL nao encontrada" }
-
-    # --- BUILD FINAL ---
-    - name: Build Legacy
-      run: |
-        $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
-        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
-        $env:OPUS_STATIC = "1"
-        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
-        $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
-        $env:SODIUM_SHARED = "false"
-        $env:RUSTFLAGS = "-C target-feature=+crt-static"
-        
-        cargo build --target i686-pc-windows-msvc --release --features inline
-      shell: powershell
-
-    - name: Package Legacy
-      shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
-        Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
-        Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
-        Write-Host "Pacote Legacy Criado!"
-
-    - name: Upload Legacy
-      uses: actions/upload-artifact@v4
-      with:
-        name: Saurus-Remote-Legacy-32bit
-        path: Saurus_Legacy_32bit
+        git clone
