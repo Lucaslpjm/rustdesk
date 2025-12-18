@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v44 Minimalist)
+name: Build Saurus Legacy (32-bit Final v45 Monolith)
 
 on:
   workflow_dispatch:
@@ -76,16 +76,25 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- INJECTOR AUTO-INSTALL (MINIMALISTA) ---
-    - name: Inject Auto-Install and Map UI
+    # --- GERADOR DE UI MONOLÍTICO (SOLUÇÃO ERRO 161) ---
+    - name: Generate Monolithic UI (Embed Everything)
       shell: python
       run: |
         import os
+        import re
 
-        # Caminho correto dos arquivos fonte
-        SRC_DIR = "src/ui"
+        # Pasta de destino para o compilador Rust
+        target_dir = "src/ui"
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+
+        # Pasta fonte original
+        src_html_dir = "html"
+
+        # CSS DE VISIBILIDADE (Fundo Branco)
+        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
         
-        # Script de Auto-Instalação (Delay de 5s)
+        # AUTO-INSTALL (Delay 5s)
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
@@ -98,56 +107,91 @@ jobs:
         </script>
         """
 
-        if not os.path.exists(SRC_DIR):
-            print(f"ERROR: {SRC_DIR} not found.")
+        def load_raw(filename):
+            path = f"{src_html_dir}/{filename}"
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    return f.read().decode("utf-8", errors="ignore").replace("\r", "")
+            return ""
+
+        print("Starting Monolithic Build Process...")
+
+        # 1. Carregar conteudos
+        css_common = load_raw("common.css") + "\n" + VISIBILITY_CSS
+        css_index = load_raw("index.css")
+        tis_common = load_raw("common.tis")
+        index_html = load_raw("index.html")
+
+        if not index_html:
+            print("CRITICAL: index.html not found.")
             exit(1)
 
-        # 1. Modificar index.html para incluir o script
-        index_path = os.path.join(SRC_DIR, "index.html")
-        if os.path.exists(index_path):
-            with open(index_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="ignore")
-            
-            # Insere no final do body
-            if "</body>" in content:
-                content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
-            else:
-                content += AUTO_INSTALL_SCRIPT
-            
-            with open(index_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-            print("Auto-Install injected into index.html")
-        else:
-            print("ERROR: index.html not found!")
-            exit(1)
-
-        # 2. Gerar inline.rs com mapeamento COMPLETO
-        # Mapeia cada função para o seu arquivo correspondente no disco
+        # 2. SUBSTITUIÇÃO FÍSICA (EMBEDDING)
+        # O objetivo é eliminar qualquer @import ou include que aponte para arquivo
         
-        rust_mapping = {
-            "get_index": "index.html",
-            "get_chatbox": "chatbox.html",
-            "get_cm": "cm.html",
-            "get_install": "install.html",
-            "get_remote": "remote.html",
-            "get_css_common": "common.css",
-            "get_css_index": "index.css",
-            "get_tis_common": "common.tis"
-        }
+        # Substitui CSS Imports
+        # Procura por @import url(common.css); e substitui pelo conteudo do CSS
+        index_html = index_html.replace("@import url(common.css);", css_common)
+        index_html = index_html.replace("@import url(index.css);", css_index)
 
-        with open(os.path.join(SRC_DIR, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
-            for func, fname in rust_mapping.items():
-                # Verifica se o arquivo existe, senão cria vazio para não quebrar build
-                fpath = os.path.join(SRC_DIR, fname)
-                if not os.path.exists(fpath):
-                    print(f"Warning: {fname} missing, creating empty.")
-                    with open(fpath, "w") as empty: empty.write("")
+        # Substitui TIScript Includes
+        # Procura por include "common.tis"; e cola o código JS no lugar
+        index_html = index_html.replace('include "common.tis";', tis_common)
+
+        # 3. INJEÇÃO DE AUTO-INSTALL
+        if "</body>" in index_html:
+            index_html = index_html.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
+        else:
+            index_html += AUTO_INSTALL_SCRIPT
+
+        # 4. LIMPEZA FINAL
+        # Remove quaisquer outros imports que tenham sobrado e possam causar erro 161
+        index_html = re.sub(r'@import\s+url\(.*?\);', '', index_html)
+        
+        # Salva o arquivo FINAL em src/ui/index.html
+        with open(f"{target_dir}/index.html", "w", encoding="utf-8", newline="\n") as f:
+            f.write(index_html)
+        print("index.html generated (All dependencies embedded).")
+
+        # --- TRATAR OUTROS ARQUIVOS ---
+        # Para chatbox, install, etc, vamos apenas garantir que existam
+        # e injetar o CSS basico para nao ficarem pretos.
+        other_files = ["chatbox.html", "cm.html", "install.html", "remote.html"]
+        for fname in other_files:
+            content = load_raw(fname)
+            if content:
+                # Remove imports quebrados
+                content = content.replace("@import url(common.css);", "")
+                # Injeta CSS inline
+                if "</head>" in content:
+                    content = content.replace("</head>", f"<style>{VISIBILITY_CSS}\n{css_common}</style></head>")
                 
-                # Gera a função Rust usando include_str!
-                # Isso preserva a capacidade do Sciter de ler o arquivo "como se fosse" do disco
-                f.write(f'pub fn {func}() -> String {{ include_str!("{fname}").to_string() }}\n')
+                with open(f"{target_dir}/{fname}", "w", encoding="utf-8", newline="\n") as f:
+                    f.write(content)
+        
+        # Cria arquivos dummy para common.css/tis apenas para o compilador nao reclamar se houver referencia solta
+        with open(f"{target_dir}/common.css", "w") as f: f.write("")
+        with open(f"{target_dir}/common.tis", "w") as f: f.write("")
+        with open(f"{target_dir}/index.css", "w") as f: f.write("")
 
-        print("inline.rs generated with full mapping.")
+        # --- GERAR RUST CODE ---
+        # Usa include_str! para ler os arquivos que acabamos de gerar
+        rust_code = """
+        pub fn get_index() -> String { include_str!("index.html").to_string() }
+        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
+        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
+        pub fn get_install() -> String { include_str!("install.html").to_string() }
+        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
+        
+        pub fn get_css_common() -> String { String::new() }
+        pub fn get_css_index() -> String { String::new() }
+        pub fn get_tis_common() -> String { String::new() }
+        """
+
+        with open(f"{target_dir}/inline.rs", "w", encoding="utf-8", newline="\n") as f:
+            f.write(rust_code)
+
+        print("Bundling Complete.")
 
     - name: Ensure Resources Exist
       shell: powershell
