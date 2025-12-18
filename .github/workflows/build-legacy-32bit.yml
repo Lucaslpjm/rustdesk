@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v46 Search & Embed)
+name: Build Saurus Legacy (32-bit Final v47 Dynamic)
 
 on:
   workflow_dispatch:
@@ -26,15 +26,15 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # --- FERRAMENTAS ---
+    # --- INSTALAÇÃO DE FERRAMENTAS ---
     - name: Install Build Tools
       run: |
         choco install llvm --version 12.0.0 --allow-downgrade -y
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
       shell: powershell
 
-    # --- LIBSODIUM ---
-    - name: Setup Libsodium
+    # --- SETUP LIBSODIUM ---
+    - name: Setup Official Libsodium (32-bit Isolated)
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
@@ -76,38 +76,37 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI INTELIGENTE (LOCATE & EMBED) ---
-    - name: Generate Embedded UI (Smart Locate)
+    # --- GERADOR DE UI (DYNAMIC SCANNER v47) ---
+    - name: Inject AutoInstall & Generate Dynamic Inline
       shell: python
       run: |
         import os
-        import re
 
-        # Função para encontrar onde diabos está a pasta UI
-        def find_ui_dir():
-            for root, dirs, files in os.walk("."):
-                if "index.html" in files and "common.css" in files:
-                    return root
-            return None
-
-        # Localiza diretório fonte
-        SOURCE_DIR = find_ui_dir()
-        if not SOURCE_DIR:
-            print("CRITICAL ERROR: Could not locate directory containing index.html and common.css")
-            # Fallback para src/ui se a busca falhar, mas deve achar
-            SOURCE_DIR = "src/ui" 
-            if not os.path.exists(SOURCE_DIR): os.makedirs(SOURCE_DIR)
+        # 1. Configurar caminhos
+        # O GitHub Actions faz checkout na raiz, mas os arquivos originais estao em html/
+        # Vamos mover de html/ para src/ui/ para garantir que o compilador ache tudo
+        SRC_UI = "src/ui"
+        HTML_SOURCE = "html"
         
-        print(f"UI Source Directory Found: {SOURCE_DIR}")
+        if not os.path.exists(SRC_UI):
+            os.makedirs(SRC_UI)
 
-        # CSS DE VISIBILIDADE (Garante fundo branco)
-        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
+        # 2. Copiar arquivos de html/ para src/ui/
+        # Isso garante que temos msgbox.tis, common.css, tudo no lugar certo.
+        import shutil
+        if os.path.exists(HTML_SOURCE):
+            for item in os.listdir(HTML_SOURCE):
+                s = os.path.join(HTML_SOURCE, item)
+                d = os.path.join(SRC_UI, item)
+                if os.path.isfile(s):
+                    shutil.copy2(s, d)
         
-        # AUTO-INSTALL (5s delay)
+        # 3. Injetar Auto-Install no index.html
         AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
+            // Delay de 5s para ver a tela carregada, depois instala
             self.timer(5000, function() {
                try { view.install_me(true); } catch(e) {}
                return false; 
@@ -115,87 +114,42 @@ jobs:
           }
         </script>
         """
-
-        def load_file(fname):
-            path = os.path.join(SOURCE_DIR, fname)
-            if os.path.exists(path):
-                with open(path, "rb") as f:
-                    return f.read().decode("utf-8", errors="ignore").replace("\r", "")
-            return ""
-
-        # --- PROCESSAMENTO DO INDEX.HTML (MONOLITO) ---
-        print("Bundling index.html...")
         
-        index_content = load_file("index.html")
-        css_common = load_file("common.css")
-        css_index = load_file("index.css")
-        tis_common = load_file("common.tis")
-
-        # 1. Embed CSS (Substitui imports)
-        if css_common:
-            # Adiciona visibilidade no common
-            full_css = f"{VISIBILITY_CSS}\n{css_common}"
-            index_content = index_content.replace("@import url(common.css);", full_css)
-        
-        if css_index:
-            index_content = index_content.replace("@import url(index.css);", css_index)
-
-        # 2. Embed JS (Substitui includes)
-        if tis_common:
-            index_content = index_content.replace('include "common.tis";', tis_common)
-
-        # 3. Inject Auto-Install
-        if "</body>" in index_content:
-            index_content = index_content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
+        index_path = os.path.join(SRC_UI, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, "rb") as f:
+                content = f.read().decode("utf-8", errors="ignore")
+            
+            if "</body>" in content:
+                content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
+            else:
+                content += AUTO_INSTALL_SCRIPT
+            
+            with open(index_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            print("Auto-Install injected.")
         else:
-            index_content += AUTO_INSTALL_SCRIPT
+            print("ERROR: index.html not found even after copy!")
 
-        # 4. Remove restos de imports quebrados
-        index_content = re.sub(r'@import\s+url\(.*?\);', '', index_content)
-
-        # --- SALVAR ARQUIVOS MODIFICADOS ---
-        # Sobrescrevemos os originais para que o Rust leia os arquivos "gordos"
-        with open(os.path.join(SOURCE_DIR, "index.html"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(index_content)
+        # 4. Gerar inline.rs DINAMICAMENTE
+        # Varre TODOS os arquivos da pasta e cria o mapeamento
+        # msgbox.tis -> pub fn get_msgbox_tis() ...
         
-        # Garante CSS nos outros HTMLs para não ficarem pretos
-        other_files = ["chatbox.html", "cm.html", "install.html", "remote.html"]
-        for fname in other_files:
-            content = load_file(fname)
-            if content:
-                content = content.replace("@import url(common.css);", "") # Remove link quebrado
-                if "</head>" in content:
-                    content = content.replace("</head>", f"<style>{VISIBILITY_CSS}\n{css_common}</style></head>")
+        print("Generating dynamic inline.rs...")
+        with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
+            for filename in os.listdir(SRC_UI):
+                if filename == "inline.rs": continue
+                if os.path.isdir(os.path.join(SRC_UI, filename)): continue
+
+                # Normaliza o nome da função (ex: common.css -> get_common_css)
+                func_name = "get_" + filename.replace(".", "_").replace("-", "_")
                 
-                with open(os.path.join(SOURCE_DIR, fname), "w", encoding="utf-8", newline="\n") as f:
-                    f.write(content)
+                # Escreve a função usando a macro include_bytes! para segurança total
+                # Isso impede erros de string e garante que o arquivo seja embutido binariamente
+                f.write(f'pub fn {func_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{filename}")).to_string() }}\n')
+                print(f"Mapped {filename} -> {func_name}")
 
-        # --- GERAR RUST INLINE.RS ---
-        # O arquivo inline.rs DEVE estar em src/ui/inline.rs para o Rust achar
-        # Se SOURCE_DIR for diferente, precisamos garantir que inline.rs vá para src/ui
-        rust_dest = "src/ui/inline.rs"
-        if not os.path.exists("src/ui"): os.makedirs("src/ui")
-
-        # Como usamos include_str!, o caminho deve ser relativo ao arquivo .rs
-        # Se SOURCE_DIR == src/ui, include_str!("index.html") funciona.
-        
-        rust_code = """
-        pub fn get_index() -> String { include_str!("index.html").to_string() }
-        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
-        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
-        pub fn get_install() -> String { include_str!("install.html").to_string() }
-        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
-        
-        // Retorna vazio para não duplicar
-        pub fn get_css_common() -> String { String::new() }
-        pub fn get_css_index() -> String { String::new() }
-        pub fn get_tis_common() -> String { String::new() }
-        """
-
-        with open(rust_dest, "w", encoding="utf-8") as f:
-            f.write(rust_code)
-
-        print(f"UI Bundle Complete. Files saved in {SOURCE_DIR}, inline.rs in src/ui")
+        print("Dynamic UI Generation Complete.")
 
     - name: Ensure Resources Exist
       shell: powershell
