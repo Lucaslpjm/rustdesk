@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final Debug v39)
+name: Build Saurus Legacy (32-bit Final v41)
 
 on:
   workflow_dispatch:
@@ -76,8 +76,15 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (CORRIGIDO + DEBUG) ---
-    - name: Generate Nuclear UI Bundle (Fixed)
+    # --- DEBUG DE ARQUIVOS (Para garantir que sabemos onde estão) ---
+    - name: Debug File Structure
+      run: |
+        dir
+        dir html
+      shell: cmd
+
+    # --- GERADOR DE UI (SMART INLINER v41) ---
+    - name: Generate Smart Inline UI
       shell: python
       run: |
         import os
@@ -88,89 +95,92 @@ jobs:
             os.makedirs(target_dir)
 
         # CSS DE VISIBILIDADE
-        VISIBILITY_CSS = """
-        html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: "Segoe UI", sans-serif; }
-        """
+        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
         
-        # AUTO-INSTALL (Com log para debug visual se possivel)
+        # AUTO-INSTALL (10s delay)
         AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
-            stdout.println("SAURUS: UI Ready function called");
             view.state = View.WINDOW_SHOWN;
-            self.timer(5000, function() {
-               try { 
-                  stdout.println("SAURUS: Attempting AutoInstall");
-                  view.install_me(true); 
-               } catch(e) {
-                  stdout.println("SAURUS: AutoInstall Error " + e);
-               }
+            self.timer(10000, function() {
+               try { view.install_me(true); } catch(e) {}
                return false; 
             });
           }
         </script>
         """
 
-        def read_clean(fname):
-            paths = [f"src/ui/{fname}", f"html/{fname}", fname]
-            for p in paths:
-                if os.path.exists(p):
-                    with open(p, "rb") as f:
-                        return f.read().decode("utf-8-sig", errors="ignore").replace("\r", "")
+        # Função para carregar arquivo da pasta html/
+        def load_raw(filename):
+            # Tenta na pasta html/ (padrão do repo)
+            path = f"html/{filename}"
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # PREPARA O INDEX.HTML (MONOLITO)
-        css_common = read_clean("common.css")
-        css_index = read_clean("index.css")
-        tis_common = read_clean("common.tis")
-        index_html = read_clean("index.html")
-
-        # Remove imports externos
-        index_html = re.sub(r'@import\s+url\(.*?\);', '', index_html)
-        index_html = re.sub(r'include\s+".*?";', '', index_html)
-
-        # Injeta CSS
-        style_block = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n{css_index}\n</style>"
-        if "</head>" in index_html:
-            index_html = index_html.replace("</head>", f"{style_block}</head>")
-        else:
-            index_html = style_block + index_html
-
-        # Injeta JS
-        script_block = f'<script type="text/tiscript">\n{tis_common}\n</script>'
-        if "</body>" in index_html:
-            index_html = index_html.replace("</body>", f"{script_block}\n{AUTO_INSTALL}</body>")
-        else:
-            index_html += f"{script_block}\n{AUTO_INSTALL}"
-
-        # Carrega outros arquivos
-        # CORRECAO: Variavel corrigida aqui
-        chatbox_content = read_clean("chatbox.html")
-        cm_content = read_clean("cm.html")
-        install_content = read_clean("install.html")
-        remote_content = read_clean("remote.html")
+        # --- PROCESSAMENTO DO INDEX.HTML ---
+        print("Processing index.html...")
+        index_content = load_raw("index.html")
         
-        def gen_rust_func(name, content):
-            # Adiciona CSS de visibilidade nos outros HTMLs tambem
-            if "html" in name and "</head>" in content:
-                content = content.replace("</head>", f"<style>{VISIBILITY_CSS}</style></head>")
-            
-            # RAW STRING RUST (r###"..."###)
-            return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
+        if not index_content:
+            print("ERROR: index.html not found in html/ directory!")
+            exit(1)
+
+        # 1. Substituir common.css
+        css_common = load_raw("common.css")
+        if css_common:
+            # Anexa nosso CSS de visibilidade no final do common.css
+            full_css = css_common + "\n" + VISIBILITY_CSS
+            # Substitui o import pela tag style com o conteudo
+            index_content = index_content.replace("@import url(common.css);", full_css)
+        
+        # 2. Substituir index.css (se houver)
+        css_index = load_raw("index.css")
+        if css_index:
+            index_content = index_content.replace("@import url(index.css);", css_index)
+
+        # 3. Substituir common.tis
+        tis_common = load_raw("common.tis")
+        if tis_common:
+            # Sciter usa: include "common.tis";
+            # Vamos substituir apenas o texto do include pelo conteudo do arquivo
+            # e envolver o script de autoinstall
+            index_content = index_content.replace('include "common.tis";', tis_common)
+
+        # 4. Injetar Auto-Install no final
+        index_content += AUTO_INSTALL
+
+        # --- PROCESSAMENTO DOS OUTROS ARQUIVOS ---
+        # Apenas lemos e limpamos, sem inlining complexo, pois index.html é o principal
+        chatbox_content = load_raw("chatbox.html")
+        cm_content = load_raw("cm.html")
+        install_content = load_raw("install.html")
+        remote_content = load_raw("remote.html")
+
+        # Injeta CSS de visibilidade neles tambem
+        for content in [chatbox_content, cm_content, install_content, remote_content]:
+            if content and "@import url(common.css);" in content:
+                content = content.replace("@import url(common.css);", VISIBILITY_CSS)
+
+        # --- GERAÇÃO DO RUST ---
+        def gen_func(name, content):
+             # Escape para raw string rust
+             return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
 
         with open(f"{target_dir}/inline.rs", "w", encoding="utf-8", newline='\n') as f:
-            f.write(gen_rust_func("get_index", index_html))
-            f.write(gen_rust_func("get_chatbox", chatbox_content))
-            f.write(gen_rust_func("get_cm", cm_content))
-            f.write(gen_rust_func("get_install", install_content))
-            f.write(gen_rust_func("get_remote", remote_content))
+            f.write(gen_func("get_index", index_content))
+            f.write(gen_func("get_chatbox", chatbox_content))
+            f.write(gen_func("get_cm", cm_content))
+            f.write(gen_func("get_install", install_content))
+            f.write(gen_func("get_remote", remote_content))
             
-            # Stubs
+            # Stubs vazios
             f.write('pub fn get_css_common() -> String { "".to_string() }\n')
             f.write('pub fn get_css_index() -> String { "".to_string() }\n')
             f.write('pub fn get_tis_common() -> String { "".to_string() }\n')
 
-        print("Nuclear UI Bundle Generated (Fixed Variable).")
+        print("Smart Inline UI Generated Successfully.")
 
     - name: Ensure Resources Exist
       shell: powershell
@@ -182,7 +192,7 @@ jobs:
         if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
         else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
 
-    # --- HELPER FILES ---
+    # --- ARQUIVOS AUXILIARES ---
     - name: Create Helper Files (Src)
       shell: powershell
       run: |
@@ -304,13 +314,6 @@ jobs:
         Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
         Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
         Write-Host "Pacote Legacy Criado!"
-
-    # --- UPLOAD PARA DEBUG (SALVA O CÓDIGO FONTE MODIFICADO) ---
-    - name: Upload UI Source (Debug)
-      uses: actions/upload-artifact@v4
-      with:
-        name: Saurus-UI-Source-Debug
-        path: src/ui/inline.rs
 
     - name: Upload Legacy
       uses: actions/upload-artifact@v4
