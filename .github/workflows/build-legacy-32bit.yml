@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v42 Fixed Path)
+name: Build Saurus Legacy (32-bit Final v43 AutoInstall Only)
 
 on:
   workflow_dispatch:
@@ -76,30 +76,25 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- DEBUG: Confirmar local dos arquivos ---
-    - name: Check Source UI Location
-      run: dir src\ui
-      shell: cmd
-
-    # --- GERADOR DE UI (CORREÇÃO DE CAMINHO src/ui) ---
-    - name: Process UI Files (Native Bundle)
+    # --- GERADOR DE UI (APENAS BUNDLE + AUTOINSTALL) ---
+    - name: Bundle UI and Inject AutoInstall (No Visual Changes)
       shell: python
       run: |
         import os
         import re
 
-        # O diretório correto é src/ui
-        TARGET_DIR = "src/ui"
-        
-        # 1. CSS VISIBILIDADE
-        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
+        # Define diretório de destino
+        target_dir = "src/ui"
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
 
-        # 2. AUTO-INSTALL (10s delay)
-        AUTO_INSTALL = """
+        # Script de Auto-Instalação
+        # Aguarda 2s para garantir carregamento, depois chama install_me
+        AUTO_INSTALL_SCRIPT = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
-            self.timer(10000, function() {
+            self.timer(2000, function() {
                try { view.install_me(true); } catch(e) {}
                return false; 
             });
@@ -107,81 +102,89 @@ jobs:
         </script>
         """
 
-        def read_file(filename):
-            path = os.path.join(TARGET_DIR, filename)
+        def load_raw(filename):
+            # Procura na pasta html original
+            path = f"html/{filename}"
             if os.path.exists(path):
                 with open(path, "rb") as f:
+                    # Remove BOM e CR, mas mantem o resto intacto
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        print("Starting UI Bundle Process...")
+        # --- PROCESSAMENTO DO INDEX.HTML ---
+        print("Processing index.html...")
+        index_content = load_raw("index.html")
+        
+        if not index_content:
+            print("CRITICAL ERROR: index.html not found!")
+            exit(1)
 
-        # Carrega conteudos base
-        css_common = read_file("common.css")
-        tis_common = read_file("common.tis")
-        index_html = read_file("index.html")
+        # 1. BUNDLING (Obrigatório para não dar Tela Branca em modo inline)
+        # Substitui os links externos pelo conteudo real dos arquivos
+        
+        css_common = load_raw("common.css")
+        if css_common:
+            index_content = index_content.replace("@import url(common.css);", f"<style>{css_common}</style>")
+        
+        css_index = load_raw("index.css")
+        if css_index:
+            index_content = index_content.replace("@import url(index.css);", f"<style>{css_index}</style>")
 
-        if not index_html:
-            print("ERROR: index.html not found in src/ui. Aborting UI processing.")
-            # Nao aborta o script para nao travar o build, mas avisa
+        tis_common = load_raw("common.tis")
+        if tis_common:
+            # Envolve o código TIScript em tags se necessário ou apenas substitui
+            # No Sciter, 'include' apenas cola o texto.
+            index_content = index_content.replace('include "common.tis";', tis_common)
+
+        # 2. INJEÇÃO DO AUTO-INSTALL
+        # Inserimos no final do body
+        if "</body>" in index_content:
+            index_content = index_content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
         else:
-            # --- PROCESSAR INDEX.HTML ---
-            # Remove imports externos
-            index_html = re.sub(r'@import\s+url\(.*?\);', '', index_html)
-            index_html = re.sub(r'include\s+".*?";', '', index_html)
-
-            # Injeta CSS (Visibilidade + Common)
-            style_block = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n</style>"
-            if "</head>" in index_html:
-                index_html = index_html.replace("</head>", f"{style_block}</head>")
-            else:
-                index_html = style_block + index_html
-
-            # Injeta Scripts (Common + AutoInstall)
-            script_block = f'<script type="text/tiscript">\n{tis_common}\n</script>'
-            if "</body>" in index_html:
-                index_html = index_html.replace("</body>", f"{script_block}\n{AUTO_INSTALL}</body>")
-            else:
-                index_html += f"{script_block}\n{AUTO_INSTALL}"
+            index_content += AUTO_INSTALL_SCRIPT
             
-            # SOBRESCREVE o index.html original com a versao "Bundled"
-            with open(os.path.join(TARGET_DIR, "index.html"), "w", encoding="utf-8", newline="\n") as f:
-                f.write(index_html)
-            print("index.html bundled and overwritten.")
+        # Salva o index.html modificado em src/ui
+        with open(os.path.join(target_dir, "index.html"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(index_content)
 
-        # --- PROCESSAR OUTROS ARQUIVOS HTML ---
-        # Apenas injeta o CSS de visibilidade neles
+        # --- PROCESSAMENTO DOS OUTROS ARQUIVOS ---
+        # Apenas copiamos (lendo/gravando) para garantir que existam em src/ui
+        # e removemos referências a common.css para evitar erro 404 (já que nao existe arquivo fisico no inline)
+        
         other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
         for fname in other_htmls:
-            content = read_file(fname)
+            content = load_raw(fname)
             if content:
-                content = content.replace("@import url(common.css);", "") # Remove link quebrado
-                if "</head>" in content:
-                    content = content.replace("</head>", f"<style>{VISIBILITY_CSS}\n{css_common}</style></head>")
-                
-                with open(os.path.join(TARGET_DIR, fname), "w", encoding="utf-8", newline="\n") as f:
+                # Remove link quebrado, o estilo vai ficar sem formatação comum, 
+                # mas funcionalmente ok para janelas secundarias
+                content = content.replace("@import url(common.css);", "") 
+                with open(os.path.join(target_dir, fname), "w", encoding="utf-8", newline="\n") as f:
                     f.write(content)
-                print(f"{fname} patched.")
 
-        # --- GERAR INLINE.RS (Simples e Nativo) ---
-        # Como sobrescrevemos os arquivos, podemos usar include_str! direto
-        rust_code = """
-        pub fn get_index() -> String { include_str!("index.html").to_string() }
-        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
-        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
-        pub fn get_install() -> String { include_str!("install.html").to_string() }
-        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
-        
-        // Retorna vazio para CSS/JS pois já foram injetados no HTML
-        pub fn get_css_common() -> String { String::new() }
-        pub fn get_css_index() -> String { String::new() }
-        pub fn get_tis_common() -> String { String::new() }
-        """
+        # --- GERAÇÃO DO RUST ---
+        def gen_func(name, content):
+             # Raw string literal para o Rust
+             return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
 
-        with open(os.path.join(TARGET_DIR, "inline.rs"), "w", encoding="utf-8") as f:
-            f.write(rust_code)
+        # Para os arquivos auxiliares (CSS/TIS), retornamos vazio no Rust
+        # pois eles já foram colados dentro do HTML pelo Python acima.
         
-        print("inline.rs generated.")
+        with open(os.path.join(target_dir, "inline.rs"), "w", encoding="utf-8", newline='\n') as f:
+            # index.html (Bundled + AutoInstall)
+            f.write(f'pub fn get_index() -> String {{ include_str!("index.html").to_string() }}\n')
+            
+            # Outros HTMLs (Raw)
+            f.write(f'pub fn get_chatbox() -> String {{ include_str!("chatbox.html").to_string() }}\n')
+            f.write(f'pub fn get_cm() -> String {{ include_str!("cm.html").to_string() }}\n')
+            f.write(f'pub fn get_install() -> String {{ include_str!("install.html").to_string() }}\n')
+            f.write(f'pub fn get_remote() -> String {{ include_str!("remote.html").to_string() }}\n')
+            
+            # Stubs vazios
+            f.write('pub fn get_css_common() -> String { "".to_string() }\n')
+            f.write('pub fn get_css_index() -> String { "".to_string() }\n')
+            f.write('pub fn get_tis_common() -> String { "".to_string() }\n')
+
+        print("Bundled UI Generated (Original Look + AutoInstall).")
 
     - name: Ensure Resources Exist
       shell: powershell
