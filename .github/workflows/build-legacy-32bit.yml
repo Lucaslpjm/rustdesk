@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v54 Asset Packer)
+name: Build Saurus Legacy (32-bit Final v55 Syntax Fix)
 
 on:
   workflow_dispatch:
@@ -76,7 +76,7 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (ASSET PACKER v54) ---
+    # --- GERADOR DE UI (ASSET PACKER v55) ---
     - name: Inline Assets and AutoInstall
       shell: python
       run: |
@@ -86,9 +86,8 @@ jobs:
 
         # Define diretórios
         SRC_UI = "src/ui"
-        HTML_SOURCE = "html" # Pasta original onde o repo baixa os arquivos
+        HTML_SOURCE = "html" 
         
-        # Cria src/ui se não existir
         if not os.path.exists(SRC_UI):
             os.makedirs(SRC_UI)
 
@@ -101,22 +100,19 @@ jobs:
                 if os.path.isfile(s):
                     shutil.copy2(s, d)
         
-        # 2. Função para ler arquivos
+        # 2. Helpers
         def read_file(fname):
-            # Procura primeiro em SRC_UI
             fpath = os.path.join(SRC_UI, fname)
             if os.path.exists(fpath):
                 with open(fpath, "rb") as f:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 3. Lógica de "Inlining" (Substituir import pelo conteúdo)
+        # 3. Lógica de "Inlining" 
         def process_content(content):
-            # Loop para resolver imports aninhados (css dentro de css)
             for _ in range(5):
                 changed = False
                 
-                # Substituir CSS (@import url(style.css);)
                 def sub_css(match):
                     fname = match.group(1)
                     if fname.startswith("http") or fname.startswith("//") or fname.startswith("sciter"): return match.group(0)
@@ -128,10 +124,9 @@ jobs:
                         return f"/* {fname} */\n{c}"
                     return ""
                 
-                # Substituir TIScript (include "script.tis";)
                 def sub_tis(match):
                     fname = match.group(1)
-                    if fname.startswith("sciter"): return match.group(0) # Não mexe no reactor!
+                    if fname.startswith("sciter"): return match.group(0) 
                     print(f"  Inlining TIS: {fname}")
                     c = read_file(fname)
                     if c:
@@ -158,11 +153,11 @@ jobs:
             # Resolve os imports
             bundled_html = process_content(raw_html)
             
-            # Injeta CSS Global para garantir fundo branco
+            # Injeta CSS Global
             if "</head>" in bundled_html:
                 bundled_html = bundled_html.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000; }</style></head>")
             
-            # Injeta Auto-Install (Delay 10s para garantir visualização)
+            # Injeta Auto-Install (Delay 10s)
             AUTO_INSTALL = """
             <script type="text/tiscript">
               function self.ready() {
@@ -180,29 +175,24 @@ jobs:
             else:
                 bundled_html += AUTO_INSTALL
             
-            # Salva o index.html "Gordo"
             with open(index_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(bundled_html)
             print("index.html bundled successfully.")
 
-        # 5. Processar outros HTMLs (Chatbox, etc) para não quebrarem
+        # 5. Processar outros HTMLs
         other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
         for html_name in other_htmls:
             p = os.path.join(SRC_UI, html_name)
             if os.path.exists(p):
                 c = read_file(html_name)
-                c = process_content(c) # Inline CSS
-                # Adiciona fundo branco
+                c = process_content(c)
                 if "</head>" in c:
                     c = c.replace("</head>", "<style>html { background: #FFF; }</style></head>")
                 with open(p, "w", encoding="utf-8", newline="\n") as f:
                     f.write(c)
 
-        # 6. Gerar inline.rs (Mapeamento Rust)
-        # Usamos include_bytes! para ler os arquivos que acabamos de modificar/salvar em src/ui
+        # 6. Gerar inline.rs
         rust_code = []
-        
-        # Arquivos obrigatórios mapeados para funções específicas
         mandatory = {
             "get_index": "index.html",
             "get_chatbox": "chatbox.html",
@@ -214,17 +204,13 @@ jobs:
             "get_tis_common": "common.tis"
         }
         
-        processed_files = set()
-        
+        processed = set()
         for func, fname in mandatory.items():
-            # Mesmo que o arquivo esteja vazio ou já embutido, a função precisa existir e retornar algo válido
             rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
-            processed_files.add(fname)
+            processed.add(fname)
 
-        # Mapeia qualquer outro arquivo (ex: imagens, outros tis) para funções genéricas
-        # Isso evita que o Sciter falhe se tentar carregar algo dinamicamente
         for fname in os.listdir(SRC_UI):
-            if fname not in processed_files and os.path.isfile(os.path.join(SRC_UI, fname)) and fname != "inline.rs":
+            if fname not in processed and os.path.isfile(os.path.join(SRC_UI, fname)) and fname != "inline.rs":
                 safe_name = "get_" + fname.replace(".", "_").replace("-", "_")
                 rust_code.append(f'pub fn {safe_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
 
@@ -307,10 +293,67 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG ---
+    # --- INSTALAÇÃO VCPKG (QUOTED FIX) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
-        if (Test-Path C:\vcpkg) { Remove-Item C:\vcpkg -Recurse -Force }
-        git clone
+        if (Test-Path "C:\vcpkg") { Remove-Item "C:\vcpkg" -Recurse -Force }
+        & git clone "https://github.com/microsoft/vcpkg.git" "C:\vcpkg"
+        Set-Location "C:\vcpkg"
+        & git fetch --all --tags
+        & git checkout "5765d1d644787a28e8d839659345c26915152771"
+        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+        .\vcpkg integrate install
+        $maxRetries = 5; $retryCount = 0; $success = $false
+        while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
+                if ($LASTEXITCODE -eq 0) { $success = $true }
+            } catch { Start-Sleep 15; $retryCount++ }
+        }
+        if (-not $success) { throw "Falha VCPKG" }
+
+    # --- DOWNLOAD SCITER DLL (QUOTED FIX) ---
+    - name: Download Sciter DLL (Clone Master)
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "target\release"
+        if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
+        & git clone --depth 1 "https://github.com/c-smile/sciter-sdk.git" "sciter_repo"
+        $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
+        if (Test-Path $DllSource) {
+            Copy-Item $DllSource "target\release\sciter.dll" -Force
+            Write-Host "DLL Sciter 32-bit instalada!"
+        } else { throw "DLL nao encontrada" }
+
+    # --- BUILD FINAL ---
+    - name: Build Legacy
+      run: |
+        $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
+        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
+        $env:OPUS_STATIC = "1"
+        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
+        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
+        $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
+        $env:SODIUM_SHARED = "false"
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
+        
+        cargo build --target i686-pc-windows-msvc --release --features inline
+      shell: powershell
+
+    - name: Package Legacy
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
+        Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
+        Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
+        Write-Host "Pacote Legacy Criado!"
+
+    - name: Upload Legacy
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saurus-Remote-Legacy-32bit
+        path: Saurus_Legacy_32bit
