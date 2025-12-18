@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v47 Dynamic)
+name: Build Saurus Legacy (32-bit Final v48 Hybrid)
 
 on:
   workflow_dispatch:
@@ -26,15 +26,15 @@ jobs:
         toolchain: 1.65.0
         targets: i686-pc-windows-msvc
 
-    # --- INSTALAÇÃO DE FERRAMENTAS ---
+    # --- FERRAMENTAS ---
     - name: Install Build Tools
       run: |
         choco install llvm --version 12.0.0 --allow-downgrade -y
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
       shell: powershell
 
-    # --- SETUP LIBSODIUM ---
-    - name: Setup Official Libsodium (32-bit Isolated)
+    # --- LIBSODIUM ---
+    - name: Setup Libsodium
       shell: powershell
       run: |
         $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
@@ -76,24 +76,22 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (DYNAMIC SCANNER v47) ---
-    - name: Inject AutoInstall & Generate Dynamic Inline
+    # --- GERADOR DE UI (HYBRID v48) ---
+    - name: Hybrid UI Generator (Embed + Fix Names)
       shell: python
       run: |
         import os
+        import shutil
 
-        # 1. Configurar caminhos
-        # O GitHub Actions faz checkout na raiz, mas os arquivos originais estao em html/
-        # Vamos mover de html/ para src/ui/ para garantir que o compilador ache tudo
+        # 1. Configurar Caminhos
         SRC_UI = "src/ui"
         HTML_SOURCE = "html"
         
         if not os.path.exists(SRC_UI):
             os.makedirs(SRC_UI)
 
-        # 2. Copiar arquivos de html/ para src/ui/
-        # Isso garante que temos msgbox.tis, common.css, tudo no lugar certo.
-        import shutil
+        # 2. Copiar TUDO de html/ para src/ui/ para garantir que nenhum arquivo falte
+        print("Copying source files...")
         if os.path.exists(HTML_SOURCE):
             for item in os.listdir(HTML_SOURCE):
                 s = os.path.join(HTML_SOURCE, item)
@@ -101,12 +99,25 @@ jobs:
                 if os.path.isfile(s):
                     shutil.copy2(s, d)
         
-        # 3. Injetar Auto-Install no index.html
-        AUTO_INSTALL_SCRIPT = """
+        # 3. Helpers para leitura
+        def load_file(fname):
+            path = os.path.join(SRC_UI, fname)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    return f.read().decode("utf-8", errors="ignore").replace("\r", "")
+            return ""
+
+        # 4. Carregar Dependências Comuns
+        css_common = load_file("common.css")
+        tis_common = load_file("common.tis")
+        # Forçamos fundo branco no CSS comum para garantir visibilidade
+        css_common += "\nhtml, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
+
+        # 5. Injetar Auto-Install e Embedar Dependências no index.html
+        AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
-            // Delay de 5s para ver a tela carregada, depois instala
             self.timer(5000, function() {
                try { view.install_me(true); } catch(e) {}
                return false; 
@@ -114,42 +125,71 @@ jobs:
           }
         </script>
         """
-        
+
         index_path = os.path.join(SRC_UI, "index.html")
         if os.path.exists(index_path):
-            with open(index_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="ignore")
+            content = load_file("index.html")
             
+            # Embed CSS
+            content = content.replace("@import url(common.css);", f"<style>{css_common}</style>")
+            # Embed JS
+            content = content.replace('include "common.tis";', f"<script type='text/tiscript'>{tis_common}</script>")
+            
+            # Inject AutoInstall
             if "</body>" in content:
-                content = content.replace("</body>", f"{AUTO_INSTALL_SCRIPT}</body>")
+                content = content.replace("</body>", f"{AUTO_INSTALL}</body>")
             else:
-                content += AUTO_INSTALL_SCRIPT
-            
+                content += AUTO_INSTALL
+                
+            # Salvar
             with open(index_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
-            print("Auto-Install injected.")
+            print("index.html bundled and injected.")
         else:
-            print("ERROR: index.html not found even after copy!")
+            print("CRITICAL: index.html missing in src/ui")
 
-        # 4. Gerar inline.rs DINAMICAMENTE
-        # Varre TODOS os arquivos da pasta e cria o mapeamento
-        # msgbox.tis -> pub fn get_msgbox_tis() ...
+        # 6. Gerar inline.rs com nomes EXATOS que o Rust espera
+        # Mapeamento manual para os arquivos principais para corrigir o erro de compilação
+        # Para outros arquivos, geramos genérico caso o Sciter precise
         
-        print("Generating dynamic inline.rs...")
+        rust_code = []
+        
+        # Mapa obrigatório do RustDesk
+        mandatory_map = {
+            "get_index": "index.html",
+            "get_chatbox": "chatbox.html",
+            "get_cm": "cm.html",
+            "get_install": "install.html",
+            "get_remote": "remote.html",
+            "get_css_common": "common.css",
+            "get_css_index": "index.css",
+            "get_tis_common": "common.tis"
+        }
+
+        files_processed = set()
+
+        # Gera funções obrigatórias (com include_bytes! para segurança)
+        for func, fname in mandatory_map.items():
+            # Se o arquivo já foi "embutido" no index.html, ainda precisamos
+            # da função Rust existindo, mesmo que retorne o conteúdo original ou vazio.
+            # Vamos retornar o conteúdo do arquivo físico em src/ui (que já copiamos/modificamos)
+            rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
+            files_processed.add(fname)
+
+        # Gera funções para o resto dos arquivos (ex: msgbox.tis)
+        for fname in os.listdir(SRC_UI):
+            if fname == "inline.rs" or os.path.isdir(os.path.join(SRC_UI, fname)): continue
+            if fname in files_processed: continue
+            
+            # Normaliza nome para Rust
+            safe_name = "get_" + fname.replace(".", "_").replace("-", "_")
+            rust_code.append(f'pub fn {safe_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
+
+        # Grava o inline.rs
         with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
-            for filename in os.listdir(SRC_UI):
-                if filename == "inline.rs": continue
-                if os.path.isdir(os.path.join(SRC_UI, filename)): continue
-
-                # Normaliza o nome da função (ex: common.css -> get_common_css)
-                func_name = "get_" + filename.replace(".", "_").replace("-", "_")
-                
-                # Escreve a função usando a macro include_bytes! para segurança total
-                # Isso impede erros de string e garante que o arquivo seja embutido binariamente
-                f.write(f'pub fn {func_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{filename}")).to_string() }}\n')
-                print(f"Mapped {filename} -> {func_name}")
-
-        print("Dynamic UI Generation Complete.")
+            f.write("\n".join(rust_code))
+        
+        print("inline.rs generated with CORRECT function names.")
 
     - name: Ensure Resources Exist
       shell: powershell
