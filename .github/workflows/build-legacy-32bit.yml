@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v49 Clean Inject)
+name: Build Saurus Legacy (32-bit Final v50 Recursive)
 
 on:
   workflow_dispatch:
@@ -76,12 +76,13 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (CLEAN INJECT v49) ---
-    - name: Hybrid UI Generator (Clean Content Injection)
+    # --- GERADOR DE UI (RECURSIVE INLINER v50) ---
+    - name: Recursive UI Inliner & AutoInstall
       shell: python
       run: |
         import os
         import shutil
+        import re
 
         # 1. Configurar Caminhos
         SRC_UI = "src/ui"
@@ -98,30 +99,64 @@ jobs:
                 d = os.path.join(SRC_UI, item)
                 if os.path.isfile(s):
                     shutil.copy2(s, d)
-        
-        # 3. Helpers para leitura
-        def load_file(fname):
-            path = os.path.join(SRC_UI, fname)
+
+        # 3. Função de Leitura
+        def read_file(path):
             if os.path.exists(path):
                 with open(path, "rb") as f:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 4. Carregar Dependências Comuns
-        css_common = load_file("common.css")
-        tis_common = load_file("common.tis")
-        
-        # Adiciona apenas um fix para garantir fundo branco, sem quebrar o CSS
-        css_common += "\nhtml { background-color: #FFFFFF; }"
+        # 4. Processador Recursivo de Includes
+        # Isso resolve msgbox.tis dentro de common.tis, etc.
+        def resolve_includes(content, root_dir):
+            # Regex para CSS: @import url(nome.css);
+            # Regex para JS: include "nome.tis";
+            
+            # Limite de iterações para evitar loop infinito
+            for _ in range(5):
+                has_changes = False
+                
+                # Resolver CSS Imports
+                def replace_css(match):
+                    fname = match.group(1)
+                    fpath = os.path.join(root_dir, fname)
+                    print(f"  Inlining CSS: {fname}")
+                    c = read_file(fpath)
+                    # Se achou conteudo, retorna o conteudo. Se nao, retorna string vazia (remove o import)
+                    if c: 
+                        nonlocal has_changes
+                        has_changes = True
+                        return c
+                    return ""
+                
+                content = re.sub(r'@import\s+url\((.*?)\);', replace_css, content)
 
-        # 5. Injetar (Clean) no index.html
-        # IMPORTANTE: Aqui NÃO colocamos <script> ou <style> extras, pois já existem no arquivo original
-        
+                # Resolver JS Includes (TIScript)
+                def replace_tis(match):
+                    fname = match.group(1)
+                    fpath = os.path.join(root_dir, fname)
+                    print(f"  Inlining TIS: {fname}")
+                    c = read_file(fpath)
+                    if c:
+                        nonlocal has_changes
+                        has_changes = True
+                        return c
+                    return ""
+
+                content = re.sub(r'include\s+"(.*?)";', replace_tis, content)
+                
+                if not has_changes:
+                    break
+            
+            return content
+
+        # 5. Script Auto-Install (Delay 5s)
         AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
             view.state = View.WINDOW_SHOWN;
-            self.timer(4000, function() {
+            self.timer(5000, function() {
                try { view.install_me(true); } catch(e) {}
                return false; 
             });
@@ -129,35 +164,34 @@ jobs:
         </script>
         """
 
-        index_path = os.path.join(SRC_UI, "index.html")
-        if os.path.exists(index_path):
-            content = load_file("index.html")
+        # 6. Processar index.html
+        target_file = os.path.join(SRC_UI, "index.html")
+        if os.path.exists(target_file):
+            print(f"Processing {target_file}...")
+            content = read_file(target_file)
             
-            # Substituição LIMPA (Conteúdo por Conteúdo)
-            # Remove o import e cola o código CSS direto
-            content = content.replace("@import url(common.css);", css_common)
+            # Resolve dependencias recursivamente
+            content = resolve_includes(content, SRC_UI)
             
-            # Remove o include e cola o código JS direto
-            # O include "..." já está dentro de <script>, então colamos apenas o texto
-            content = content.replace('include "common.tis";', tis_common)
+            # Injeta CSS de Visibilidade (Fundo Branco)
+            if "</head>" in content:
+                content = content.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000000; }</style></head>")
             
-            # Injeta AutoInstall no final do body (esse sim precisa da tag script pois é novo)
+            # Injeta AutoInstall
             if "</body>" in content:
                 content = content.replace("</body>", f"{AUTO_INSTALL}</body>")
             else:
                 content += AUTO_INSTALL
-                
-            # Salvar
-            with open(index_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-            print("index.html bundled CLEANLY.")
-        else:
-            print("CRITICAL: index.html missing in src/ui")
 
-        # 6. Gerar inline.rs com nomes EXATOS
+            # Salva
+            with open(target_file, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            print("index.html fully bundled.")
+        else:
+            print("CRITICAL: index.html not found!")
+
+        # 7. Gerar inline.rs (Mapeamento Exato)
         rust_code = []
-        
-        # Mapa obrigatório do RustDesk (Função -> Arquivo)
         mandatory_map = {
             "get_index": "index.html",
             "get_chatbox": "chatbox.html",
@@ -168,27 +202,24 @@ jobs:
             "get_css_index": "index.css",
             "get_tis_common": "common.tis"
         }
+        
+        files_mapped = set()
 
-        files_processed = set()
-
-        # Gera funções obrigatórias
         for func, fname in mandatory_map.items():
-            # Retorna o conteúdo do arquivo físico em src/ui (já modificado se for o index)
-            # Usamos include_bytes para evitar erros de escape de string
             rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
-            files_processed.add(fname)
+            files_mapped.add(fname)
 
-        # Gera funções para o resto dos arquivos (ex: msgbox.tis) para evitar erro 404
+        # Mapeia outros arquivos por segurança (ex: msgbox.tis)
         for fname in os.listdir(SRC_UI):
             if fname == "inline.rs" or os.path.isdir(os.path.join(SRC_UI, fname)): continue
-            if fname in files_processed: continue
+            if fname in files_mapped: continue
             
             safe_name = "get_" + fname.replace(".", "_").replace("-", "_")
             rust_code.append(f'pub fn {safe_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
 
         with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(rust_code))
-        
+
         print("inline.rs generated.")
 
     - name: Ensure Resources Exist
