@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v41)
+name: Build Saurus Legacy (32-bit Final v42 Fixed Path)
 
 on:
   workflow_dispatch:
@@ -76,28 +76,25 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- DEBUG DE ARQUIVOS (Para garantir que sabemos onde estão) ---
-    - name: Debug File Structure
-      run: |
-        dir
-        dir html
+    # --- DEBUG: Confirmar local dos arquivos ---
+    - name: Check Source UI Location
+      run: dir src\ui
       shell: cmd
 
-    # --- GERADOR DE UI (SMART INLINER v41) ---
-    - name: Generate Smart Inline UI
+    # --- GERADOR DE UI (CORREÇÃO DE CAMINHO src/ui) ---
+    - name: Process UI Files (Native Bundle)
       shell: python
       run: |
         import os
         import re
 
-        target_dir = "src/ui"
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
-
-        # CSS DE VISIBILIDADE
-        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
+        # O diretório correto é src/ui
+        TARGET_DIR = "src/ui"
         
-        # AUTO-INSTALL (10s delay)
+        # 1. CSS VISIBILIDADE
+        VISIBILITY_CSS = "html, body { background-color: #FFFFFF !important; color: #000000 !important; font-family: 'Segoe UI', sans-serif; }"
+
+        # 2. AUTO-INSTALL (10s delay)
         AUTO_INSTALL = """
         <script type="text/tiscript">
           function self.ready() {
@@ -110,77 +107,81 @@ jobs:
         </script>
         """
 
-        # Função para carregar arquivo da pasta html/
-        def load_raw(filename):
-            # Tenta na pasta html/ (padrão do repo)
-            path = f"html/{filename}"
+        def read_file(filename):
+            path = os.path.join(TARGET_DIR, filename)
             if os.path.exists(path):
                 with open(path, "rb") as f:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # --- PROCESSAMENTO DO INDEX.HTML ---
-        print("Processing index.html...")
-        index_content = load_raw("index.html")
-        
-        if not index_content:
-            print("ERROR: index.html not found in html/ directory!")
-            exit(1)
+        print("Starting UI Bundle Process...")
 
-        # 1. Substituir common.css
-        css_common = load_raw("common.css")
-        if css_common:
-            # Anexa nosso CSS de visibilidade no final do common.css
-            full_css = css_common + "\n" + VISIBILITY_CSS
-            # Substitui o import pela tag style com o conteudo
-            index_content = index_content.replace("@import url(common.css);", full_css)
-        
-        # 2. Substituir index.css (se houver)
-        css_index = load_raw("index.css")
-        if css_index:
-            index_content = index_content.replace("@import url(index.css);", css_index)
+        # Carrega conteudos base
+        css_common = read_file("common.css")
+        tis_common = read_file("common.tis")
+        index_html = read_file("index.html")
 
-        # 3. Substituir common.tis
-        tis_common = load_raw("common.tis")
-        if tis_common:
-            # Sciter usa: include "common.tis";
-            # Vamos substituir apenas o texto do include pelo conteudo do arquivo
-            # e envolver o script de autoinstall
-            index_content = index_content.replace('include "common.tis";', tis_common)
+        if not index_html:
+            print("ERROR: index.html not found in src/ui. Aborting UI processing.")
+            # Nao aborta o script para nao travar o build, mas avisa
+        else:
+            # --- PROCESSAR INDEX.HTML ---
+            # Remove imports externos
+            index_html = re.sub(r'@import\s+url\(.*?\);', '', index_html)
+            index_html = re.sub(r'include\s+".*?";', '', index_html)
 
-        # 4. Injetar Auto-Install no final
-        index_content += AUTO_INSTALL
+            # Injeta CSS (Visibilidade + Common)
+            style_block = f"<style>\n{VISIBILITY_CSS}\n{css_common}\n</style>"
+            if "</head>" in index_html:
+                index_html = index_html.replace("</head>", f"{style_block}</head>")
+            else:
+                index_html = style_block + index_html
 
-        # --- PROCESSAMENTO DOS OUTROS ARQUIVOS ---
-        # Apenas lemos e limpamos, sem inlining complexo, pois index.html é o principal
-        chatbox_content = load_raw("chatbox.html")
-        cm_content = load_raw("cm.html")
-        install_content = load_raw("install.html")
-        remote_content = load_raw("remote.html")
-
-        # Injeta CSS de visibilidade neles tambem
-        for content in [chatbox_content, cm_content, install_content, remote_content]:
-            if content and "@import url(common.css);" in content:
-                content = content.replace("@import url(common.css);", VISIBILITY_CSS)
-
-        # --- GERAÇÃO DO RUST ---
-        def gen_func(name, content):
-             # Escape para raw string rust
-             return f'pub fn {name}() -> String {{ r###"{content}"###.to_string() }}\n'
-
-        with open(f"{target_dir}/inline.rs", "w", encoding="utf-8", newline='\n') as f:
-            f.write(gen_func("get_index", index_content))
-            f.write(gen_func("get_chatbox", chatbox_content))
-            f.write(gen_func("get_cm", cm_content))
-            f.write(gen_func("get_install", install_content))
-            f.write(gen_func("get_remote", remote_content))
+            # Injeta Scripts (Common + AutoInstall)
+            script_block = f'<script type="text/tiscript">\n{tis_common}\n</script>'
+            if "</body>" in index_html:
+                index_html = index_html.replace("</body>", f"{script_block}\n{AUTO_INSTALL}</body>")
+            else:
+                index_html += f"{script_block}\n{AUTO_INSTALL}"
             
-            # Stubs vazios
-            f.write('pub fn get_css_common() -> String { "".to_string() }\n')
-            f.write('pub fn get_css_index() -> String { "".to_string() }\n')
-            f.write('pub fn get_tis_common() -> String { "".to_string() }\n')
+            # SOBRESCREVE o index.html original com a versao "Bundled"
+            with open(os.path.join(TARGET_DIR, "index.html"), "w", encoding="utf-8", newline="\n") as f:
+                f.write(index_html)
+            print("index.html bundled and overwritten.")
 
-        print("Smart Inline UI Generated Successfully.")
+        # --- PROCESSAR OUTROS ARQUIVOS HTML ---
+        # Apenas injeta o CSS de visibilidade neles
+        other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
+        for fname in other_htmls:
+            content = read_file(fname)
+            if content:
+                content = content.replace("@import url(common.css);", "") # Remove link quebrado
+                if "</head>" in content:
+                    content = content.replace("</head>", f"<style>{VISIBILITY_CSS}\n{css_common}</style></head>")
+                
+                with open(os.path.join(TARGET_DIR, fname), "w", encoding="utf-8", newline="\n") as f:
+                    f.write(content)
+                print(f"{fname} patched.")
+
+        # --- GERAR INLINE.RS (Simples e Nativo) ---
+        # Como sobrescrevemos os arquivos, podemos usar include_str! direto
+        rust_code = """
+        pub fn get_index() -> String { include_str!("index.html").to_string() }
+        pub fn get_chatbox() -> String { include_str!("chatbox.html").to_string() }
+        pub fn get_cm() -> String { include_str!("cm.html").to_string() }
+        pub fn get_install() -> String { include_str!("install.html").to_string() }
+        pub fn get_remote() -> String { include_str!("remote.html").to_string() }
+        
+        // Retorna vazio para CSS/JS pois já foram injetados no HTML
+        pub fn get_css_common() -> String { String::new() }
+        pub fn get_css_index() -> String { String::new() }
+        pub fn get_tis_common() -> String { String::new() }
+        """
+
+        with open(os.path.join(TARGET_DIR, "inline.rs"), "w", encoding="utf-8") as f:
+            f.write(rust_code)
+        
+        print("inline.rs generated.")
 
     - name: Ensure Resources Exist
       shell: powershell
