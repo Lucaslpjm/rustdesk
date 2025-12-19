@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v56 Passive)
+name: Build Saurus Legacy (32-bit Final v57 Auto-Install Fixed)
 
 on:
   workflow_dispatch:
@@ -76,8 +76,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (ASSET PACKER v56 - FIXED) ---
-    - name: Inline Assets (Passive Mode - No AutoInstall)
+    # --- GERADOR DE UI (ASSET PACKER v57 - COM CONTAGEM REGRESSIVA) ---
+    - name: Inline Assets and AutoInstall Countdown
       shell: python
       run: |
         import os
@@ -88,8 +88,7 @@ jobs:
         SRC_UI = "src/ui"
         HTML_SOURCE = "html" 
         
-        if not os.path.exists(SRC_UI):
-            os.makedirs(SRC_UI)
+        if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
 
         # 1. Copia TUDO de html/ para src/ui/
         print("Copying source files from html/ to src/ui/...")
@@ -156,20 +155,36 @@ jobs:
             if "</head>" in bundled_html:
                 bundled_html = bundled_html.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000; }</style></head>")
             
-            # --- MODO PASSIVO: SEM AUTO-INSTALL ---
-            # Apenas mostra o log para confirmar carregamento
-            PASSIVE_SCRIPT = """
+            # --- AUTO-INSTALL COM VISUALIZAÇÃO ---
+            # Mostra um timer na tela e instala apos 10s
+            AUTO_INSTALL_UI = """
+            <div id="install-overlay" style="position:absolute; top:0; left:0; width:100%; height:50px; background:yellow; color:black; z-index:9999; text-align:center; padding-top:10px; font-weight:bold; font-size:16px;">
+                Instalando Saurus Remote em <span id="cnt">10</span> segundos...
+            </div>
             <script type="text/tiscript">
               function self.ready() {
                 view.state = View.WINDOW_SHOWN;
-                stdout.println("SAURUS: UI Loaded. Passive Mode.");
+                var count = 10;
+                var el = $(#cnt);
+                self.timer(1000, function() {
+                   count = count - 1;
+                   if(el) el.text = count.toString();
+                   
+                   if (count <= 0) {
+                      $(#install-overlay).text = "Instalando agora...";
+                      try { view.install_me(true); } catch(e) {}
+                      return false; // stop timer
+                   }
+                   return true; // continue timer
+                });
               }
             </script>
             """
+            
             if "</body>" in bundled_html:
-                bundled_html = bundled_html.replace("</body>", f"{PASSIVE_SCRIPT}</body>")
+                bundled_html = bundled_html.replace("</body>", f"{AUTO_INSTALL_UI}</body>")
             else:
-                bundled_html += PASSIVE_SCRIPT
+                bundled_html += AUTO_INSTALL_UI
             
             with open(index_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(bundled_html)
@@ -289,16 +304,16 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (FIXED) ---
+    # --- INSTALAÇÃO VCPKG (CORRIGIDO SEM ASPAS ESTRANHAS) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
         if (Test-Path "C:\vcpkg") { Remove-Item "C:\vcpkg" -Recurse -Force }
         git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-        cd C:\vcpkg
+        Set-Location "C:\vcpkg"
         git fetch --all --tags
-        git checkout 5765d1d644787a28e8d839659345c26915152771
+        git checkout "5765d1d644787a28e8d839659345c26915152771"
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
         $maxRetries = 5; $retryCount = 0; $success = $false
@@ -310,7 +325,7 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- DOWNLOAD SCITER DLL ---
+    # --- DOWNLOAD SCITER DLL (CORRIGIDO) ---
     - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
