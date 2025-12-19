@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v59 Ghost Mode)
+name: Build Saurus Legacy (32-bit Final v60 Type Fix)
 
 on:
   workflow_dispatch:
@@ -80,24 +80,16 @@ jobs:
     - name: Bypass Single Instance Check
       shell: powershell
       run: |
-        # Altera o nome da aplicação no código para "SaurusGhost"
-        # Isso impede que ele detecte o "RustDesk" original rodando e se feche
         $Main = "src/main.rs"
         if (Test-Path $Main) {
             $c = Get-Content $Main -Raw
-            # Procura onde ele define o nome da instância única (geralmente Global\RustDesk)
-            # Como é difícil achar a linha exata sem regex complexo, vamos forçar o modo debug de console
-            # que muitas vezes ignora essa checagem, E mudar o nome do executável no Cargo.toml
-            
-            # Habilitar Console (Janela Preta) para ver erros
+            # Reativa console para debug se necessario, e garante que nao trava
             $c = $c.Replace('#![windows_subsystem = "windows"]', '// #![windows_subsystem = "windows"]')
-            
             Set-Content -Path $Main -Value $c -Encoding UTF8
-            Write-Host "Modo Console e Bypass aplicados."
         }
 
-    # --- GERADOR DE UI (ASSET PACKER V59 - APPEND ONLY) ---
-    - name: Inline Assets (Safe Append Mode)
+    # --- GERADOR DE UI (v60 - STRING FIX + AUTO INSTALL) ---
+    - name: Inline Assets (Type Fix)
       shell: python
       run: |
         import os
@@ -109,7 +101,7 @@ jobs:
         
         if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
 
-        # 1. Copiar arquivos originais
+        # 1. Copia arquivos
         print("Copying source files...")
         if os.path.exists(HTML_SOURCE):
             for item in os.listdir(HTML_SOURCE):
@@ -124,64 +116,83 @@ jobs:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 2. Inlining Seguro
-        # Ao invés de substituir, vamos APENSAR o CSS e JS no final do arquivo
-        # Isso garante que todas as definições originais carreguem, e as nossas entrem por cima
-        
+        # 2. Injetor de Auto-Instalação CORRIGIDO
+        # Mudança principal: view.install_me("true") em vez de view.install_me(true)
+        INJECTED_BLOCK = """
+        <style>
+            html, body { background-color: #FFFFFF !important; }
+            #install-overlay {
+                position: fixed; top: 0; left: 0; width: 100%; height: 60px;
+                background: #ffeb3b; color: #000; z-index: 99999;
+                text-align: center; line-height: 60px; font-size: 18px; font-weight: bold;
+                border-bottom: 2px solid #000;
+            }
+        </style>
+        <div id="install-overlay">
+            SAURUS: Instalando em <span id="cnt">5</span> segundos...
+        </div>
+        <script type="text/tiscript">
+            function self.ready() {
+                view.state = View.WINDOW_SHOWN;
+                var count = 5;
+                var el = $(#cnt);
+                
+                self.timer(1000, function() {
+                    count = count - 1;
+                    if(el) el.text = count.toString();
+                    
+                    if (count <= 0) {
+                        if(el) $(#install-overlay).text = "Executando Instalação...";
+                        // CORREÇÃO: Passando string "true"
+                        try { view.install_me("true"); } catch(e) { stdout.println("Install Error: " + e); }
+                        return false; 
+                    }
+                    return true;
+                });
+            }
+        </script>
+        """
+
+        # 3. Processar index.html
         index_file = os.path.join(SRC_UI, "index.html")
         if os.path.exists(index_file):
             print("Bundling index.html...")
             content = read_file("index.html")
             
-            # Carrega dependencias
+            # Inline CSS/JS básicos
             css_common = read_file("common.css")
-            css_index = read_file("index.css")
             tis_common = read_file("common.tis")
-
-            # Remove imports externos para não dar erro 404
+            
+            # Remove imports
             content = re.sub(r'@import\s+url\(.*?\);', '', content)
             content = re.sub(r'include\s+".*?";', '', content)
-            
-            # Monta o bloco de injeção
-            INJECTED_BLOCK = f"""
-            <style>
-                /* Common CSS Injected */
-                {css_common}
-                /* Index CSS Injected */
-                {css_index}
-                /* Force White BG */
-                html, body {{ background-color: #FFFFFF !important; }}
-            </style>
-            <script type="text/tiscript">
-                // Common TIS Injected
-                {tis_common}
-                
-                // FORCE INSTALL BUTTON
-                function self.ready() {{
-                    view.state = View.WINDOW_SHOWN;
-                    stdout.println("SAURUS: READY!");
-                    
-                    var btn = $(#force-install);
-                    if(!btn) {{
-                        $(body).append("<button id='force-install' style='display:block; width:100%; height:50px; background:red; color:white; font-size:20px; cursor:pointer;'>CLIQUE PARA INSTALAR AGORA</button>");
-                        $(#force-install).on("click", function() {{
-                            view.install_me(true);
-                        }});
-                    }}
-                }}
-            </script>
-            """
+
+            # Injeta tudo
+            content = content.replace("</head>", f"<style>{css_common}</style></head>")
+            # Injeta TIScript + AutoInstall no final
+            final_script = f"<script type='text/tiscript'>{tis_common}</script>\n{INJECTED_BLOCK}"
             
             if "</body>" in content:
-                content = content.replace("</body>", f"{INJECTED_BLOCK}</body>")
+                content = content.replace("</body>", f"{final_script}</body>")
             else:
-                content += INJECTED_BLOCK
-                
+                content += final_script
+
             with open(index_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
-            print("index.html bundled safely.")
 
-        # 3. Gerar Inline.rs
+        # 4. Outros arquivos (apenas CSS básico)
+        other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
+        for h in other_htmls:
+            p = os.path.join(SRC_UI, h)
+            if os.path.exists(p):
+                c = read_file(h)
+                # Remove imports quebrados
+                c = re.sub(r'@import\s+url\(.*?\);', '', c)
+                if "</head>" in c: 
+                    c = c.replace("</head>", "<style>html { background: #fff; }</style></head>")
+                with open(p, "w", encoding="utf-8", newline="\n") as f: f.write(c)
+
+        # 5. Inline.rs
         rust_code = []
         mandatory = ["get_index", "get_chatbox", "get_cm", "get_install", "get_remote", "get_css_common", "get_css_index", "get_tis_common"]
         file_map = {
@@ -203,6 +214,8 @@ jobs:
 
         with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(rust_code))
+        
+        print("Done.")
 
     - name: Ensure Resources Exist
       shell: powershell
