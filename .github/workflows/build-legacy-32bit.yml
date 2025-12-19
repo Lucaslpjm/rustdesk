@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v58 Statue Mode)
+name: Build Saurus Legacy (32-bit Final v58 Console Debug)
 
 on:
   workflow_dispatch:
@@ -76,8 +76,19 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (MODO ESTÁTUA) ---
-    - name: Inline Assets (Passive Mode)
+    # --- ATIVAR MODO CONSOLE (CRITICO PARA DEBUG) ---
+    - name: Enable Console Subsystem
+      shell: powershell
+      run: |
+        $MainRs = "src/main.rs"
+        $Content = Get-Content $MainRs -Raw
+        # Comenta a linha que esconde o console
+        $Content = $Content.Replace('#![windows_subsystem = "windows"]', '// #![windows_subsystem = "windows"]')
+        Set-Content -Path $MainRs -Value $Content -Encoding UTF8
+        Write-Host "Modo Console Ativado! Logs aparecerão no CMD."
+
+    # --- GERADOR DE UI (ASSET PACKER SEM AUTOINSTALL) ---
+    - name: Inline Assets (Diagnostic Mode)
       shell: python
       run: |
         import os
@@ -89,12 +100,14 @@ jobs:
         
         if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
 
-        # 1. Copia arquivos
+        # 1. Copia TUDO
+        print("Copying source files from html/ to src/ui/...")
         if os.path.exists(HTML_SOURCE):
             for item in os.listdir(HTML_SOURCE):
                 s = os.path.join(HTML_SOURCE, item)
                 d = os.path.join(SRC_UI, item)
-                if os.path.isfile(s): shutil.copy2(s, d)
+                if os.path.isfile(s):
+                    shutil.copy2(s, d)
         
         def read_file(fname):
             fpath = os.path.join(SRC_UI, fname)
@@ -116,6 +129,7 @@ jobs:
                         changed = True
                         return f"/* {fname} */\n{c}"
                     return ""
+                
                 def sub_tis(match):
                     fname = match.group(1)
                     if fname.startswith("sciter"): return match.group(0) 
@@ -138,16 +152,18 @@ jobs:
             raw_html = read_file("index.html")
             bundled_html = process_content(raw_html)
             
-            # CSS Fundo Branco
+            # CSS Background Branco
             if "</head>" in bundled_html:
                 bundled_html = bundled_html.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000; }</style></head>")
             
-            # SCRIPT DE DIAGNÓSTICO (SEM INSTALL)
+            # SCRIPT DE DIAGNOSTICO (PRINT NO CONSOLE)
             DIAGNOSTIC_SCRIPT = """
             <script type="text/tiscript">
               function self.ready() {
+                // Isso vai aparecer no CMD preto!
+                stdout.println(">>> SAURUS DEBUG: Interface Carregada com Sucesso! <<<");
+                stdout.println(">>> SAURUS DEBUG: Aguardando interacao... <<<");
                 view.state = View.WINDOW_SHOWN;
-                stdout.println("SAURUS: WINDOW OPEN - WAITING USER INPUT");
               }
             </script>
             """
@@ -168,19 +184,17 @@ jobs:
                 if "</head>" in c: c = c.replace("</head>", "<style>html { background: #FFF; }</style></head>")
                 with open(p, "w", encoding="utf-8", newline="\n") as f: f.write(c)
 
-        # 5. Inline.rs
+        # 5. Inline.rs (Obrigatório)
         rust_code = []
         mandatory = ["get_index", "get_chatbox", "get_cm", "get_install", "get_remote", "get_css_common", "get_css_index", "get_tis_common"]
-        # Mapa reverso simples (função -> arquivo)
         file_map = {
             "get_index": "index.html", "get_chatbox": "chatbox.html", "get_cm": "cm.html",
             "get_install": "install.html", "get_remote": "remote.html",
             "get_css_common": "common.css", "get_css_index": "index.css", "get_tis_common": "common.tis"
         }
-        
         processed = set()
         for func in mandatory:
-            fname = file_map.get(func, func + ".html") # fallback
+            fname = file_map.get(func, func + ".html")
             rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
             processed.add(fname)
 
@@ -191,7 +205,7 @@ jobs:
 
         with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(rust_code))
-        
+
         print("Inline.rs generated")
 
     - name: Ensure Resources Exist
@@ -268,7 +282,7 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (COM QUOTES E &) ---
+    # --- INSTALAÇÃO VCPKG (QUOTED FIX) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
@@ -289,7 +303,7 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- DOWNLOAD SCITER DLL (COM QUOTES E &) ---
+    # --- DOWNLOAD SCITER DLL (QUOTED FIX) ---
     - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
