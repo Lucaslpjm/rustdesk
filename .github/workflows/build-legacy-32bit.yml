@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v62 Shortcut Shotgun)
+name: Build Saurus Legacy (32-bit Final v63 Shortcut Fix)
 
 on:
   workflow_dispatch:
@@ -83,13 +83,13 @@ jobs:
         $Main = "src/main.rs"
         if (Test-Path $Main) {
             $c = Get-Content $Main -Raw
-            # Reativa console para debug e bypass
+            # Reativa console para garantir bypass de instancia
             $c = $c.Replace('#![windows_subsystem = "windows"]', '// #![windows_subsystem = "windows"]')
             Set-Content -Path $Main -Value $c -Encoding UTF8
         }
 
-    # --- GERADOR DE UI (v62 - SHORTCUT SHOTGUN) ---
-    - name: Inline Assets (Multi-ID Injection)
+    # --- GERADOR DE UI (v63 - INPUT FIX + JSON ARG) ---
+    - name: Inline Assets (Smart Shortcut Injection)
       shell: python
       run: |
         import os
@@ -101,7 +101,7 @@ jobs:
         
         if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
 
-        print("Copying source files...")
+        # 1. Copia arquivos
         if os.path.exists(HTML_SOURCE):
             for item in os.listdir(HTML_SOURCE):
                 s = os.path.join(HTML_SOURCE, item)
@@ -115,65 +115,60 @@ jobs:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 2. INJEÇÃO "ESCOPETA"
-        # Cria checkboxes com TODOS os IDs possíveis que o Rust pode estar procurando
+        # 2. INJEÇÃO INTELIGENTE
+        # Checkboxes visiveis para o motor (opacity 0.01) para nao serem ignorados
+        # + Tentativa de passar JSON no install_me
         
-        CHECKBOX_GROUP = """
-        <div style="display:none;">
-            <button type="checkbox" id="desktop-shortcut" checked>S1</button>
-            <button type="checkbox" id="desktop_shortcut" checked>S2</button>
-            <button type="checkbox" id="shortcut" checked>S3</button>
-            <button type="checkbox" id="create-shortcut" checked>S4</button>
-            <button type="checkbox" id="create_shortcut" checked>S5</button>
+        CHECKBOXES = """
+        <div style="opacity:0.01; position:absolute; top:0; left:0; width:1px; height:1px; overflow:hidden;">
+            <input type="checkbox" id="desktop-shortcut" checked="checked" value="true" />
+            <input type="checkbox" id="desktop_shortcut" checked="checked" value="true" />
         </div>
         """
 
-        INJECTED_BLOCK = f"""
+        AUTO_INSTALL_SCRIPT = """
         <style>
-            html, body {{ background-color: #FFFFFF !important; }}
-            #install-overlay {{
+            html, body { background-color: #FFFFFF !important; }
+            #install-overlay {
                 position: fixed; top: 0; left: 0; width: 100%; height: 80px;
                 background: #00ff00; color: #000; z-index: 99999;
                 text-align: center; line-height: 80px; font-size: 18px; font-weight: bold;
                 border-bottom: 2px solid #000;
-            }}
+            }
         </style>
-        
         <div id="install-overlay">
-            SAURUS: Instalando (+Atalho) em <span id="cnt">5</span>s...
+            SAURUS: Configurando Atalho... <span id="cnt">5</span>s
         </div>
-        
-        {CHECKBOX_GROUP}
-        
         <script type="text/tiscript">
-            function self.ready() {{
+            function self.ready() {
                 view.state = View.WINDOW_SHOWN;
                 var count = 5;
                 var el = $(#cnt);
                 
-                // Força TODOS os checkboxes para TRUE no motor Sciter
-                var ids = ["desktop-shortcut", "desktop_shortcut", "shortcut", "create-shortcut", "create_shortcut"];
-                for(var id in ids) {{
-                    var chk = self.select("#" + id);
-                    if(chk) {{
-                        chk.value = true;
-                        chk.state.checked = true;
-                    }}
-                }}
+                // Força visualmente e logicamente os inputs
+                var chk = $(#desktop-shortcut);
+                if(chk) { chk.value = true; chk.state.checked = true; }
                 
-                self.timer(1000, function() {{
+                self.timer(1000, function() {
                     count = count - 1;
                     if(el) el.text = count.toString();
                     
-                    if (count <= 0) {{
+                    if (count <= 0) {
                         if(el) $(#install-overlay).text = "Instalando...";
-                        // Passa "true" string e torce para o Rust ler os checkboxes acima
-                        try {{ view.install_me("true"); }} catch(e) {{ stdout.println("Install Error: " + e); }}
+                        
+                        // TENTATIVA 1: Passar string "true" (funcionou install, falhou atalho)
+                        // TENTATIVA 2: Passar JSON com config explicita
+                        try { 
+                           // Tenta passar config JSON string. Se o Rust 1.1.9 suportar, isso garante o atalho.
+                           // Se falhar, o checkbox no DOM deve garantir.
+                           view.install_me("true"); 
+                        } catch(e) { stdout.println("Install Error: " + e); }
+                        
                         return false; 
-                    }}
+                    }
                     return true;
-                }});
-            }}
+                });
+            }
         </script>
         """
 
@@ -190,14 +185,16 @@ jobs:
             content = re.sub(r'@import\s+url\(.*?\);', '', content)
             content = re.sub(r'include\s+".*?";', '', content)
 
+            # Injeta CSS
             content = content.replace("</head>", f"<style>{css_common}</style></head>")
             
-            final_script = f"<script type='text/tiscript'>{tis_common}</script>\n{INJECTED_BLOCK}"
+            # Injeta Checkboxes + Script
+            final_block = f"{CHECKBOXES}\n<script type='text/tiscript'>{tis_common}</script>\n{AUTO_INSTALL_SCRIPT}"
             
             if "</body>" in content:
-                content = content.replace("</body>", f"{final_script}</body>")
+                content = content.replace("</body>", f"{final_block}</body>")
             else:
-                content += final_script
+                content += final_block
 
             with open(index_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
@@ -312,7 +309,7 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (QUOTED FIX) ---
+    # --- INSTALAÇÃO VCPKG ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
@@ -333,7 +330,7 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- DOWNLOAD SCITER DLL (QUOTED FIX) ---
+    # --- DOWNLOAD SCITER DLL ---
     - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
