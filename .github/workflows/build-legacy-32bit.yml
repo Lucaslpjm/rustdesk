@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v55 Syntax Fix)
+name: Build Saurus Legacy (32-bit Final v56 Passive)
 
 on:
   workflow_dispatch:
@@ -76,8 +76,8 @@ jobs:
         $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
         Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
 
-    # --- GERADOR DE UI (ASSET PACKER v55) ---
-    - name: Inline Assets and AutoInstall
+    # --- GERADOR DE UI (ASSET PACKER v56 - FIXED) ---
+    - name: Inline Assets (Passive Mode - No AutoInstall)
       shell: python
       run: |
         import os
@@ -113,6 +113,7 @@ jobs:
             for _ in range(5):
                 changed = False
                 
+                # CSS Inline
                 def sub_css(match):
                     fname = match.group(1)
                     if fname.startswith("http") or fname.startswith("//") or fname.startswith("sciter"): return match.group(0)
@@ -124,6 +125,7 @@ jobs:
                         return f"/* {fname} */\n{c}"
                     return ""
                 
+                # TIScript Inline
                 def sub_tis(match):
                     fname = match.group(1)
                     if fname.startswith("sciter"): return match.group(0) 
@@ -135,13 +137,10 @@ jobs:
                         return f"// {fname}\n{c}"
                     return ""
 
-                new_content = re.sub(r'@import\s+url\((.*?)\);', sub_css, content)
-                new_content = re.sub(r'include\s+"(.*?)";', sub_tis, new_content)
+                content = re.sub(r'@import\s+url\((.*?)\);', sub_css, content)
+                content = re.sub(r'include\s+"(.*?)";', sub_tis, content)
                 
-                if new_content != content:
-                    content = new_content
-                else:
-                    break
+                if not changed: break
             return content
 
         # 4. Processar index.html
@@ -150,30 +149,27 @@ jobs:
             print("Processing index.html bundle...")
             raw_html = read_file("index.html")
             
-            # Resolve os imports
+            # Bundle
             bundled_html = process_content(raw_html)
             
-            # Injeta CSS Global
+            # Force White Background
             if "</head>" in bundled_html:
                 bundled_html = bundled_html.replace("</head>", "<style>html, body { background-color: #FFFFFF !important; color: #000; }</style></head>")
             
-            # Injeta Auto-Install (Delay 10s)
-            AUTO_INSTALL = """
+            # --- MODO PASSIVO: SEM AUTO-INSTALL ---
+            # Apenas mostra o log para confirmar carregamento
+            PASSIVE_SCRIPT = """
             <script type="text/tiscript">
               function self.ready() {
                 view.state = View.WINDOW_SHOWN;
-                stdout.println("SAURUS: UI Loaded. Timer started.");
-                self.timer(10000, function() {
-                   try { view.install_me(true); } catch(e) {}
-                   return false; 
-                });
+                stdout.println("SAURUS: UI Loaded. Passive Mode.");
               }
             </script>
             """
             if "</body>" in bundled_html:
-                bundled_html = bundled_html.replace("</body>", f"{AUTO_INSTALL}</body>")
+                bundled_html = bundled_html.replace("</body>", f"{PASSIVE_SCRIPT}</body>")
             else:
-                bundled_html += AUTO_INSTALL
+                bundled_html += PASSIVE_SCRIPT
             
             with open(index_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(bundled_html)
@@ -293,16 +289,16 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (QUOTED FIX) ---
+    # --- INSTALAÇÃO VCPKG (FIXED) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
         $ErrorActionPreference = "Stop"
         if (Test-Path "C:\vcpkg") { Remove-Item "C:\vcpkg" -Recurse -Force }
-        & git clone "https://github.com/microsoft/vcpkg.git" "C:\vcpkg"
-        Set-Location "C:\vcpkg"
-        & git fetch --all --tags
-        & git checkout "5765d1d644787a28e8d839659345c26915152771"
+        git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+        cd C:\vcpkg
+        git fetch --all --tags
+        git checkout 5765d1d644787a28e8d839659345c26915152771
         cmd /c "bootstrap-vcpkg.bat -disableMetrics"
         .\vcpkg integrate install
         $maxRetries = 5; $retryCount = 0; $success = $false
@@ -314,13 +310,13 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- DOWNLOAD SCITER DLL (QUOTED FIX) ---
+    # --- DOWNLOAD SCITER DLL ---
     - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "target\release"
         if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
-        & git clone --depth 1 "https://github.com/c-smile/sciter-sdk.git" "sciter_repo"
+        git clone --depth 1 https://github.com/c-smile/sciter-sdk.git sciter_repo
         $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
         if (Test-Path $DllSource) {
             Copy-Item $DllSource "target\release\sciter.dll" -Force
