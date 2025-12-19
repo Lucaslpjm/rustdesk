@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v61 Desktop Shortcut)
+name: Build Saurus Legacy (32-bit Final v62 Shortcut Shotgun)
 
 on:
   workflow_dispatch:
@@ -83,13 +83,13 @@ jobs:
         $Main = "src/main.rs"
         if (Test-Path $Main) {
             $c = Get-Content $Main -Raw
-            # Reativa console para debug se necessario, e garante que nao trava
+            # Reativa console para debug e bypass
             $c = $c.Replace('#![windows_subsystem = "windows"]', '// #![windows_subsystem = "windows"]')
             Set-Content -Path $Main -Value $c -Encoding UTF8
         }
 
-    # --- GERADOR DE UI (v61 - SHORTCUT FIX) ---
-    - name: Inline Assets (Shortcut Fix)
+    # --- GERADOR DE UI (v62 - SHORTCUT SHOTGUN) ---
+    - name: Inline Assets (Multi-ID Injection)
       shell: python
       run: |
         import os
@@ -101,7 +101,6 @@ jobs:
         
         if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
 
-        # 1. Copia arquivos
         print("Copying source files...")
         if os.path.exists(HTML_SOURCE):
             for item in os.listdir(HTML_SOURCE):
@@ -116,53 +115,65 @@ jobs:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 2. INJEÇÃO CORRETIVA (Atalho Desktop)
-        # O backend do Rust procura um elemento com ID "desktop-shortcut" e verifica se .value == true
-        # Vamos injetar isso na força bruta.
+        # 2. INJEÇÃO "ESCOPETA"
+        # Cria checkboxes com TODOS os IDs possíveis que o Rust pode estar procurando
         
-        INJECTED_BLOCK = """
+        CHECKBOX_GROUP = """
+        <div style="display:none;">
+            <button type="checkbox" id="desktop-shortcut" checked>S1</button>
+            <button type="checkbox" id="desktop_shortcut" checked>S2</button>
+            <button type="checkbox" id="shortcut" checked>S3</button>
+            <button type="checkbox" id="create-shortcut" checked>S4</button>
+            <button type="checkbox" id="create_shortcut" checked>S5</button>
+        </div>
+        """
+
+        INJECTED_BLOCK = f"""
         <style>
-            html, body { background-color: #FFFFFF !important; }
-            #install-overlay {
+            html, body {{ background-color: #FFFFFF !important; }}
+            #install-overlay {{
                 position: fixed; top: 0; left: 0; width: 100%; height: 80px;
-                background: #ffeb3b; color: #000; z-index: 99999;
+                background: #00ff00; color: #000; z-index: 99999;
                 text-align: center; line-height: 80px; font-size: 18px; font-weight: bold;
                 border-bottom: 2px solid #000;
-            }
+            }}
         </style>
         
         <div id="install-overlay">
-            SAURUS: Instalando (Com Atalho) em <span id="cnt">5</span>s...
+            SAURUS: Instalando (+Atalho) em <span id="cnt">5</span>s...
         </div>
         
-        <button type="checkbox" id="desktop-shortcut" name="desktop-shortcut" checked style="display:none">Create desktop icon</button>
+        {CHECKBOX_GROUP}
         
         <script type="text/tiscript">
-            function self.ready() {
+            function self.ready() {{
                 view.state = View.WINDOW_SHOWN;
                 var count = 5;
                 var el = $(#cnt);
                 
-                // Força o checkbox a ficar marcado, caso o HTML nao tenha pegado
-                var chk = $(#desktop-shortcut);
-                if(chk) chk.value = true;
+                // Força TODOS os checkboxes para TRUE no motor Sciter
+                var ids = ["desktop-shortcut", "desktop_shortcut", "shortcut", "create-shortcut", "create_shortcut"];
+                for(var id in ids) {{
+                    var chk = self.select("#" + id);
+                    if(chk) {{
+                        chk.value = true;
+                        chk.state.checked = true;
+                    }}
+                }}
                 
-                self.timer(1000, function() {
+                self.timer(1000, function() {{
                     count = count - 1;
                     if(el) el.text = count.toString();
                     
-                    if (count <= 0) {
-                        if(el) $(#install-overlay).text = "Instalando e criando atalho...";
-                        
-                        // Garante mais uma vez antes de chamar
-                        if(chk) chk.value = true;
-                        
-                        try { view.install_me("true"); } catch(e) { stdout.println("Install Error: " + e); }
+                    if (count <= 0) {{
+                        if(el) $(#install-overlay).text = "Instalando...";
+                        // Passa "true" string e torce para o Rust ler os checkboxes acima
+                        try {{ view.install_me("true"); }} catch(e) {{ stdout.println("Install Error: " + e); }}
                         return false; 
-                    }
+                    }}
                     return true;
-                });
-            }
+                }});
+            }}
         </script>
         """
 
@@ -172,18 +183,15 @@ jobs:
             print("Bundling index.html...")
             content = read_file("index.html")
             
-            # Inline CSS/JS básicos
+            # Inline
             css_common = read_file("common.css")
             tis_common = read_file("common.tis")
             
-            # Remove imports
             content = re.sub(r'@import\s+url\(.*?\);', '', content)
             content = re.sub(r'include\s+".*?";', '', content)
 
-            # Injeta tudo
             content = content.replace("</head>", f"<style>{css_common}</style></head>")
             
-            # Injeta TIScript + AutoInstall + Checkbox Mágico no final
             final_script = f"<script type='text/tiscript'>{tis_common}</script>\n{INJECTED_BLOCK}"
             
             if "</body>" in content:
@@ -194,7 +202,7 @@ jobs:
             with open(index_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
 
-        # 4. Outros arquivos (apenas CSS básico)
+        # 4. Outros arquivos
         other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
         for h in other_htmls:
             p = os.path.join(SRC_UI, h)
@@ -304,7 +312,7 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (CORRIGIDO) ---
+    # --- INSTALAÇÃO VCPKG (QUOTED FIX) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
@@ -325,7 +333,7 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- DOWNLOAD SCITER DLL (CORRIGIDO) ---
+    # --- DOWNLOAD SCITER DLL (QUOTED FIX) ---
     - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
