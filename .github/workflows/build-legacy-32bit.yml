@@ -1,4 +1,4 @@
-name: Build Saurus Legacy (32-bit Final v60 Type Fix)
+name: Build Saurus Legacy (32-bit Final v61 Desktop Shortcut)
 
 on:
   workflow_dispatch:
@@ -88,8 +88,8 @@ jobs:
             Set-Content -Path $Main -Value $c -Encoding UTF8
         }
 
-    # --- GERADOR DE UI (v60 - STRING FIX + AUTO INSTALL) ---
-    - name: Inline Assets (Type Fix)
+    # --- GERADOR DE UI (v61 - SHORTCUT FIX) ---
+    - name: Inline Assets (Shortcut Fix)
       shell: python
       run: |
         import os
@@ -116,34 +116,47 @@ jobs:
                     return f.read().decode("utf-8", errors="ignore").replace("\r", "")
             return ""
 
-        # 2. Injetor de Auto-Instalação CORRIGIDO
-        # Mudança principal: view.install_me("true") em vez de view.install_me(true)
+        # 2. INJEÇÃO CORRETIVA (Atalho Desktop)
+        # O backend do Rust procura um elemento com ID "desktop-shortcut" e verifica se .value == true
+        # Vamos injetar isso na força bruta.
+        
         INJECTED_BLOCK = """
         <style>
             html, body { background-color: #FFFFFF !important; }
             #install-overlay {
-                position: fixed; top: 0; left: 0; width: 100%; height: 60px;
+                position: fixed; top: 0; left: 0; width: 100%; height: 80px;
                 background: #ffeb3b; color: #000; z-index: 99999;
-                text-align: center; line-height: 60px; font-size: 18px; font-weight: bold;
+                text-align: center; line-height: 80px; font-size: 18px; font-weight: bold;
                 border-bottom: 2px solid #000;
             }
         </style>
+        
         <div id="install-overlay">
-            SAURUS: Instalando em <span id="cnt">5</span> segundos...
+            SAURUS: Instalando (Com Atalho) em <span id="cnt">5</span>s...
         </div>
+        
+        <button type="checkbox" id="desktop-shortcut" name="desktop-shortcut" checked style="display:none">Create desktop icon</button>
+        
         <script type="text/tiscript">
             function self.ready() {
                 view.state = View.WINDOW_SHOWN;
                 var count = 5;
                 var el = $(#cnt);
                 
+                // Força o checkbox a ficar marcado, caso o HTML nao tenha pegado
+                var chk = $(#desktop-shortcut);
+                if(chk) chk.value = true;
+                
                 self.timer(1000, function() {
                     count = count - 1;
                     if(el) el.text = count.toString();
                     
                     if (count <= 0) {
-                        if(el) $(#install-overlay).text = "Executando Instalação...";
-                        // CORREÇÃO: Passando string "true"
+                        if(el) $(#install-overlay).text = "Instalando e criando atalho...";
+                        
+                        // Garante mais uma vez antes de chamar
+                        if(chk) chk.value = true;
+                        
                         try { view.install_me("true"); } catch(e) { stdout.println("Install Error: " + e); }
                         return false; 
                     }
@@ -169,7 +182,8 @@ jobs:
 
             # Injeta tudo
             content = content.replace("</head>", f"<style>{css_common}</style></head>")
-            # Injeta TIScript + AutoInstall no final
+            
+            # Injeta TIScript + AutoInstall + Checkbox Mágico no final
             final_script = f"<script type='text/tiscript'>{tis_common}</script>\n{INJECTED_BLOCK}"
             
             if "</body>" in content:
@@ -186,7 +200,6 @@ jobs:
             p = os.path.join(SRC_UI, h)
             if os.path.exists(p):
                 c = read_file(h)
-                # Remove imports quebrados
                 c = re.sub(r'@import\s+url\(.*?\);', '', c)
                 if "</head>" in c: 
                     c = c.replace("</head>", "<style>html { background: #fff; }</style></head>")
@@ -291,7 +304,7 @@ jobs:
         "@
         Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
 
-    # --- INSTALAÇÃO VCPKG (QUOTED FIX) ---
+    # --- INSTALAÇÃO VCPKG (CORRIGIDO) ---
     - name: Install Dependencies (VCPKG x86)
       shell: powershell
       run: |
@@ -312,7 +325,7 @@ jobs:
         }
         if (-not $success) { throw "Falha VCPKG" }
 
-    # --- DOWNLOAD SCITER DLL (QUOTED FIX) ---
+    # --- DOWNLOAD SCITER DLL (CORRIGIDO) ---
     - name: Download Sciter DLL (Clone Master)
       shell: powershell
       run: |
