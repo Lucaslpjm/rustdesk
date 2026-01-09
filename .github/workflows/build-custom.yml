@@ -134,7 +134,7 @@ jobs:
         open-new-tab = true
         hwcodec = true                # Renderizacao de textura
         use_d3d = true                # User pediu ativado (D3D)
-        check-update = true
+        check-update = false
         auto-update = false
         capture-directx = true
         direct-server = true          # UDP Hole Punching (User pediu ativado)
