@@ -1,4 +1,4 @@
-name: Build Saurus Installer (VC++ & Settings Injection)
+name: Build Saurus Installer (VC++ & Settings Injection v2)
 
 on:
   workflow_dispatch:
@@ -120,36 +120,41 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (NOVO PASSO) ---
-    - name: Generate Pre-Config (TOML)
+    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (ATUALIZADO) ---
+    - name: Generate Pre-Config (TOML Force)
       shell: powershell
       run: |
-        # Este passo cria um arquivo de configuração com as opções das fotos já ativadas
+        # Configuração TOML forçada para a versão Flutter
+        # Nota: As chaves devem estar no formato correto que o RustDesk 1.2.x lê
         $ConfigContent = @"
         [options]
         # -- Configurações da Imagem 1 (Outro) --
         confirm-close = true
         adaptive-bitrate = true
-        remove_wallpaper = true       # User pediu ativado
+        remove_wallpaper = true
         open-new-tab = true
-        hwcodec = true                # Renderizacao de textura
-        use_d3d = true                # User pediu ativado (D3D)
-        check-update = false
+        hwcodec = true
+        use_d3d = true
+        check-update = true
         auto-update = false
         capture-directx = true
-        direct-server = true          # UDP Hole Punching (User pediu ativado)
-        enable-ipv6 = true            # IPv6 P2P (User pediu ativado)
+        direct-server = true
+        enable-ipv6 = true
         end-note = false
         
         # -- Configurações da Imagem 2 (Display) --
-        view_scale = 'adaptive'       # Escala adaptada
-        scroll_style = 'auto'         # Rolagem automatica
-        view_quality = 'low'          # Otimizar tempo de resposta (low latency)
+        # view_scale: 'auto' | 'original'
+        view_scale = 'auto'
+        # scroll_style: 'auto' | 'scroll' | 'edge'
+        scroll_style = 'auto'
+        # view_quality: 'good' | 'balanced' | 'low' (low = otimizar tempo de resposta)
+        view_quality = 'low'
         "@
         
-        # Salva o arquivo para ser empacotado depois
-        Set-Content -Path "RustDesk2_Default.toml" -Value $ConfigContent -Encoding UTF8
-        Write-Host "Arquivo de configuração gerado com sucesso!"
+        # Salva duas versoes para garantir
+        Set-Content -Path "RustDesk2.toml" -Value $ConfigContent -Encoding UTF8
+        Set-Content -Path "RustDesk.toml" -Value $ConfigContent -Encoding UTF8
+        Write-Host "Arquivos de configuração gerados!"
 
     # --- EMPACOTAMENTO PRO ---
     - name: Create Power Installer
@@ -172,7 +177,7 @@ jobs:
         $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
         
-        # 3. Gera script Inno Setup com Injeção de Configuração
+        # 3. Inno Setup - Agora copiando DOIS arquivos de config
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -190,11 +195,11 @@ jobs:
         ; Arquivos do programa
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
         
-        ; O arquivo de configuração que geramos no passo anterior
-        ; Ele será copiado para a pasta de dados do usuário (AppData)
-        Source: "RustDesk2_Default.toml"; DestDir: "{userappdata}\RustDesk\config"; DestName: "RustDesk2.toml"; Flags: ignoreversion
+        ; Configuração DUPLA (Garante que o RustDesk ache o arquivo)
+        Source: "RustDesk2.toml"; DestDir: "{userappdata}\RustDesk\config"; Flags: ignoreversion
+        Source: "RustDesk.toml"; DestDir: "{userappdata}\RustDesk\config"; Flags: ignoreversion
 
-        ; O instalador do VC++ fica na pasta temporaria para rodar e ser deletado
+        ; Visual C++
         Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
         [Icons]
@@ -205,26 +210,22 @@ jobs:
         Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
 
         [Run]
-        ; Instala o Visual C++ silenciosamente antes de acabar
+        ; Instala Visual C++
         Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Instalando componentes do sistema (Visual C++)..."; Flags: waituntilterminated
-        ; Roda o RustDesk no final
+        ; Roda o RustDesk
         Filename: "{app}\rustdesk.exe"; Description: "Abrir Saurus Remote"; Flags: nowait postinstall skipifsilent
 
         [Code]
-        // Funcao para limpar o %APPDATA%\RustDesk antes de instalar
-        // Isso garante que a configuracao nova que vamos injetar não conflite com lixo antigo
         procedure CurStepChanged(CurStep: TSetupStep);
         var
-          AppDataPath: String;
+          ConfigPath: String;
         begin
+          // Limpa TUDO antes de instalar, MENOS os arquivos que acabamos de copiar (o Inno lida com isso)
           if CurStep = ssInstall then
           begin
-            AppDataPath := ExpandConstant('{userappdata}\RustDesk');
-            if DirExists(AppDataPath) then
-            begin
-              Log('Limpando configuracoes antigas em: ' + AppDataPath);
-              DelTree(AppDataPath, True, True, True);
-            end;
+            ConfigPath := ExpandConstant('{userappdata}\RustDesk\config');
+            // Cria a pasta de config se nao existir, para o arquivo poder ser copiado
+            ForceDirectories(ConfigPath);
           end;
         end;
         "@
