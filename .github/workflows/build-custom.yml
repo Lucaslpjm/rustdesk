@@ -1,4 +1,4 @@
-name: Build Saurus Installer (VC++ & Clean)
+name: Build Saurus Installer (VC++ & Settings Injection)
 
 on:
   workflow_dispatch:
@@ -120,7 +120,38 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- EMPACOTAMENTO PRO (VC++ + LIMPEZA) ---
+    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (NOVO PASSO) ---
+    - name: Generate Pre-Config (TOML)
+      shell: powershell
+      run: |
+        # Este passo cria um arquivo de configuração com as opções das fotos já ativadas
+        $ConfigContent = @"
+        [options]
+        # -- Configurações da Imagem 1 (Outro) --
+        confirm-close = true
+        adaptive-bitrate = true
+        remove_wallpaper = true       # User pediu ativado
+        open-new-tab = true
+        hwcodec = true                # Renderizacao de textura
+        use_d3d = true                # User pediu ativado (D3D)
+        check-update = true
+        auto-update = false
+        capture-directx = true
+        direct-server = true          # UDP Hole Punching (User pediu ativado)
+        enable-ipv6 = true            # IPv6 P2P (User pediu ativado)
+        end-note = false
+        
+        # -- Configurações da Imagem 2 (Display) --
+        view_scale = 'adaptive'       # Escala adaptada
+        scroll_style = 'auto'         # Rolagem automatica
+        view_quality = 'low'          # Otimizar tempo de resposta (low latency)
+        "@
+        
+        # Salva o arquivo para ser empacotado depois
+        Set-Content -Path "RustDesk2_Default.toml" -Value $ConfigContent -Encoding UTF8
+        Write-Host "Arquivo de configuração gerado com sucesso!"
+
+    # --- EMPACOTAMENTO PRO ---
     - name: Create Power Installer
       shell: powershell
       run: |
@@ -141,7 +172,7 @@ jobs:
         $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
         
-        # 3. Gera script Inno Setup com logica de Limpeza e Install
+        # 3. Gera script Inno Setup com Injeção de Configuração
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -158,6 +189,11 @@ jobs:
         [Files]
         ; Arquivos do programa
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        
+        ; O arquivo de configuração que geramos no passo anterior
+        ; Ele será copiado para a pasta de dados do usuário (AppData)
+        Source: "RustDesk2_Default.toml"; DestDir: "{userappdata}\RustDesk\config"; DestName: "RustDesk2.toml"; Flags: ignoreversion
+
         ; O instalador do VC++ fica na pasta temporaria para rodar e ser deletado
         Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
@@ -176,6 +212,7 @@ jobs:
 
         [Code]
         // Funcao para limpar o %APPDATA%\RustDesk antes de instalar
+        // Isso garante que a configuracao nova que vamos injetar não conflite com lixo antigo
         procedure CurStepChanged(CurStep: TSetupStep);
         var
           AppDataPath: String;
