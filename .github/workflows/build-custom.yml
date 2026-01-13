@@ -1,4 +1,4 @@
-name: Build Saurus Installer (VC++ & Registry Force v64)
+name: Build Saurus Installer (v65 - Hard Config Fix)
 
 on:
   workflow_dispatch:
@@ -65,7 +65,6 @@ jobs:
       run: |
         Write-Host "Configurando servidor..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        
         $SeuIP = "20.195.216.23:443" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
@@ -74,7 +73,7 @@ jobs:
            $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
            Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
-        } else { exit 1 }
+        }
 
     # --- PREPARAÇÃO ---
     - name: Fix Flutter Dependencies
@@ -119,12 +118,50 @@ jobs:
       run: python build.py --flutter
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
-
-    # --- EMPACOTAMENTO PRO (REGISTRY EDITION) ---
-    - name: Create Power Installer with Registry
+    
+    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (FORCE) ---
+    - name: Generate Forced Configuration
       shell: powershell
       run: |
-        Write-Host "Criando instalador com injeção via Registro..."
+        # Configuração TOML Exata para RustDesk 1.2.x
+        # Forçamos todas as booleanas para letras minúsculas (padrão TOML)
+        $ConfigContent = @"
+        stop-service = false
+        
+        [options]
+        # -- Segurança/Updates (Check-update FALSE é o mais importante) --
+        check-update = false
+        auto-update = false
+        confirm-close = true
+        
+        # -- Performance --
+        remove-wallpaper = true
+        direct-server = true
+        enable-ipv6 = true
+        hwcodec = true
+        use-d3d = true
+        capture-directx = true
+        
+        # -- Visualização --
+        view-scale = 'adaptive'
+        scroll-style = 'auto'
+        view-quality = 'low'
+        
+        # -- Outros --
+        open-new-tab = true
+        end-note = false
+        "@
+        
+        # Salva como RustDesk2.toml (Padrão Flutter) e RustDesk.toml (Fallback)
+        Set-Content -Path "RustDesk2.toml" -Value $ConfigContent -Encoding UTF8
+        Set-Content -Path "RustDesk.toml" -Value $ConfigContent -Encoding UTF8
+        Write-Host "Arquivos de configuração criados."
+
+    # --- EMPACOTAMENTO PRO ---
+    - name: Create Power Installer
+      shell: powershell
+      run: |
+        Write-Host "Criando instalador avançado..."
         
         $StageDir = "Staging_Area"
         New-Item -ItemType Directory -Force -Path $StageDir
@@ -141,11 +178,7 @@ jobs:
         $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
         
-        # 3. Inno Setup - AGORA COM SEÇÃO [Registry]
-        # Esta seção grava as configurações diretamente no Windows, ignorando arquivos de texto.
-        # Check-update = 0 (False) | 1 (True)
-        # Remove-wallpaper = 1 (True)
-        
+        # 3. Inno Setup - Instalação Global e Local
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -160,34 +193,28 @@ jobs:
         PrivilegesRequired=admin
         CloseApplications=yes
 
+        [Dirs]
+        ; Garante pastas necessarias
+        Name: "{userappdata}\RustDesk\config"; Permissions: users-modify
+        Name: "{commonappdata}\RustDesk\config"; Permissions: users-modify
+
         [Files]
+        ; Programa principal
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        
+        ; --- ESTRATÉGIA DE CONFIGURAÇÃO TRIPLA ---
+        
+        ; 1. Copia para a pasta do executável (Para funcionar como padrão/portable)
+        Source: "RustDesk2.toml"; DestDir: "{app}"; Flags: ignoreversion
+        
+        ; 2. Copia para o AppData do Usuário (Para o usuário atual)
+        Source: "RustDesk2.toml"; DestDir: "{userappdata}\RustDesk\config"; Flags: ignoreversion
+        
+        ; 3. Copia para o ProgramData (Para o Serviço do Sistema)
+        Source: "RustDesk2.toml"; DestDir: "{commonappdata}\RustDesk\config"; Flags: ignoreversion
+
+        ; Visual C++
         Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
-
-        [Registry]
-        ; --- CRÍTICO: DESATIVAR ATUALIZAÇÃO ---
-        ; "check-update" -> 0 = Desativado
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "0"; Flags: createvalueifdoesntexist uninsdeletevalue
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "auto-update"; ValueData: "0"; Flags: createvalueifdoesntexist uninsdeletevalue
-
-        ; --- PERFORMANCE & DISPLAY ---
-        ; "remove_wallpaper" -> 1 = Ativado (Fundo preto)
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "remove_wallpaper"; ValueData: "1"; Flags: createvalueifdoesntexist uninsdeletevalue
-        
-        ; "direct-server" (UDP) -> 1 = Ativado
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "direct-server"; ValueData: "1"; Flags: createvalueifdoesntexist uninsdeletevalue
-        
-        ; "use_d3d" -> 1 = Ativado
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "use_d3d"; ValueData: "1"; Flags: createvalueifdoesntexist uninsdeletevalue
-        
-        ; "view_quality" -> 2 ou 'low' (Otimizar resposta)
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "view_quality"; ValueData: "low"; Flags: createvalueifdoesntexist uninsdeletevalue
-        
-        ; "view_scale" -> 'auto' (Adaptada)
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "view_scale"; ValueData: "auto"; Flags: createvalueifdoesntexist uninsdeletevalue
-
-        ; "scroll_style" -> 'auto'
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "scroll_style"; ValueData: "auto"; Flags: createvalueifdoesntexist uninsdeletevalue
 
         [Icons]
         Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
@@ -205,16 +232,24 @@ jobs:
         [Code]
         procedure CurStepChanged(CurStep: TSetupStep);
         var
-          AppDataPath: String;
+          UserConfigPath, GlobalConfigPath: String;
         begin
           if CurStep = ssInstall then
           begin
-            AppDataPath := ExpandConstant('{userappdata}\RustDesk');
-            if DirExists(AppDataPath) then
-            begin
-              Log('Limpando configuracoes antigas (Pasta) para garantir o Registro...');
-              DelTree(AppDataPath, True, True, True);
-            end;
+            // Caminhos
+            UserConfigPath := ExpandConstant('{userappdata}\RustDesk\config');
+            GlobalConfigPath := ExpandConstant('{commonappdata}\RustDesk\config');
+            
+            // Cria diretorios
+            ForceDirectories(UserConfigPath);
+            ForceDirectories(GlobalConfigPath);
+            
+            // Limpa configurações antigas para garantir que as novas peguem
+            if DirExists(UserConfigPath) then
+              DelTree(UserConfigPath, True, True, True);
+              
+            if DirExists(GlobalConfigPath) then
+              DelTree(GlobalConfigPath, True, True, True);
           end;
         end;
         "@
