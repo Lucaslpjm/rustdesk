@@ -1,4 +1,4 @@
-name: Build Saurus Installer (v67 - Flexible Source Patch)
+name: Build Saurus Installer (v68 - Syntax Fix & Cleanup)
 
 on:
   workflow_dispatch:
@@ -59,27 +59,23 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- PATCH PROFUNDO NO CÓDIGO FONTE (A SOLUÇÃO REAL) ---
-    - name: Hardcode Settings in Source (Flexible Regex)
+    # --- CONFIGURAÇÃO DO SERVIDOR & HARDCODING ---
+    - name: Inject Server & Hardcode Settings
       shell: powershell
       run: |
-        Write-Host "Aplicando Patch Cirúrgico nas Configurações..."
+        Write-Host "Configurando servidor e forçando opções no código..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        
-        # Injeção de Servidor
         $SeuIP = "20.195.216.23:443" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
            $c = Get-Content $ConfigFile -Raw
            
-           # 1. Configurar Servidor
+           # 1. Injetar Servidor/Key
            $c = $c -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            $c = $c -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
 
-           # 2. Alterar Defaults das Structs (Usando Regex flexível para espaços)
-           # A ideia é interceptar a definição da struct e adicionar o atributo #[serde(default...)]
-           
+           # 2. HARDCODE: Forçar Defaults (Regex Flexível)
            # Check Update -> FALSE
            $c = [Regex]::Replace($c, 'pub\s+check_update\s*:\s*bool\s*,', '#[serde(default = "default_false")] pub check_update: bool,')
            
@@ -92,13 +88,11 @@ jobs:
            # Hardware Codec -> TRUE
            $c = [Regex]::Replace($c, 'pub\s+hwcodec\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub hwcodec: bool,')
 
-           # 3. Adicionar as funções auxiliares no final do arquivo
-           $DefaultFuncs = @"
-           
-           // SAURUS PATCH FUNCTIONS
+           # 3. Adicionar funções auxiliares (Sintaxe segura sem Here-String)
+           $DefaultFuncs = "
            fn default_true() -> bool { true }
            fn default_false() -> bool { false }
-           "@
+           "
            
            if (-not $c.Contains("fn default_true")) {
                $c = $c + $DefaultFuncs
@@ -159,22 +153,9 @@ jobs:
     - name: Generate Config Backup
       shell: powershell
       run: |
-        $ConfigContent = @"
-        stop-service = false
-        [options]
-        check-update = false
-        auto-update = false
-        confirm-close = true
-        remove-wallpaper = true
-        direct-server = true
-        enable-ipv6 = true
-        hwcodec = true
-        use-d3d = true
-        capture-directx = true
-        view-scale = 'adaptive'
-        scroll-style = 'auto'
-        view-quality = 'low'
-        "@
+        # Usando aspas duplas normais para evitar erro de sintaxe
+        $ConfigContent = "stop-service = false`r`n[options]`r`ncheck-update = false`r`nauto-update = false`r`nconfirm-close = true`r`nremove-wallpaper = true`r`ndirect-server = true`r`nenable-ipv6 = true`r`nhwcodec = true`r`nuse-d3d = true`r`ncapture-directx = true`r`nview-scale = 'adaptive'`r`nscroll-style = 'auto'`r`nview-quality = 'low'"
+        
         Set-Content -Path "RustDesk2.toml" -Value $ConfigContent -Encoding UTF8
 
     # --- EMPACOTAMENTO PRO ---
@@ -194,7 +175,7 @@ jobs:
         $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
         
-        # Script Inno Setup Otimizado
+        # Script Inno Setup com correção de indentação (ATENÇÃO AO @)
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -215,18 +196,18 @@ jobs:
         [Files]
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
         
-        ; Copia para pasta GLOBAL (Todos os usuários leem daqui se não tiverem config propria)
+        ; Copia para pasta GLOBAL e LOCAL
         Source: "RustDesk2.toml"; DestDir: "{commonappdata}\RustDesk\config"; Flags: ignoreversion
-
-        ; Copia para pasta do Executável (Portable Mode Trigger)
         Source: "RustDesk2.toml"; DestDir: "{app}"; Flags: ignoreversion
+        Source: "RustDesk2.toml"; DestDir: "{userappdata}\RustDesk\config"; Flags: ignoreversion
 
         Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
         [Registry]
-        ; Força a chave de update no registro para o usuário atual (mesmo que seja admin instalando)
         Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "false"; Flags: uninsdeletevalue
         Root: HKLM; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "false"; Flags: uninsdeletevalue
+        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "remove-wallpaper"; ValueData: "true"; Flags: uninsdeletevalue
+        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "view-quality"; ValueData: "low"; Flags: uninsdeletevalue
 
         [Icons]
         Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
@@ -238,6 +219,24 @@ jobs:
         [Run]
         Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Instalando componentes..."; Flags: waituntilterminated
         Filename: "{app}\rustdesk.exe"; Description: "Abrir Saurus Remote"; Flags: nowait postinstall skipifsilent
+
+        [Code]
+        procedure CurStepChanged(CurStep: TSetupStep);
+        var
+          UserConfig: String;
+          GlobalConfig: String;
+        begin
+          if CurStep = ssInstall then
+          begin
+            UserConfig := ExpandConstant('{userappdata}\RustDesk\config');
+            GlobalConfig := ExpandConstant('{commonappdata}\RustDesk\config');
+            ForceDirectories(UserConfig);
+            ForceDirectories(GlobalConfig);
+            
+            if FileExists(UserConfig + '\RustDesk2.toml') then DeleteFile(UserConfig + '\RustDesk2.toml');
+            if FileExists(GlobalConfig + '\RustDesk2.toml') then DeleteFile(GlobalConfig + '\RustDesk2.toml');
+          end;
+        end;
         "@
         
         Set-Content -Path "setup.iss" -Value $IssContent -Encoding ASCII
