@@ -1,4 +1,4 @@
-name: Build Saurus Installer (v66 - Update Block & Registry Lock)
+name: Build Saurus Installer (v67 - Flexible Source Patch)
 
 on:
   workflow_dispatch:
@@ -59,20 +59,56 @@ jobs:
         echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- CONFIGURAÇÃO DO SERVIDOR ---
-    - name: Inject Server Configuration
+    # --- PATCH PROFUNDO NO CÓDIGO FONTE (A SOLUÇÃO REAL) ---
+    - name: Hardcode Settings in Source (Flexible Regex)
       shell: powershell
       run: |
-        Write-Host "Configurando servidor..."
+        Write-Host "Aplicando Patch Cirúrgico nas Configurações..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
+        
+        # Injeção de Servidor
         $SeuIP = "20.195.216.23:443" 
         $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
         
         if (Test-Path $ConfigFile) {
-           $content = Get-Content $ConfigFile -Raw
-           $content = $content -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
-           $content = $content -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
-           Set-Content -Path $ConfigFile -Value $content -Encoding UTF8
+           $c = Get-Content $ConfigFile -Raw
+           
+           # 1. Configurar Servidor
+           $c = $c -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
+           $c = $c -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
+
+           # 2. Alterar Defaults das Structs (Usando Regex flexível para espaços)
+           # A ideia é interceptar a definição da struct e adicionar o atributo #[serde(default...)]
+           
+           # Check Update -> FALSE
+           $c = [Regex]::Replace($c, 'pub\s+check_update\s*:\s*bool\s*,', '#[serde(default = "default_false")] pub check_update: bool,')
+           
+           # Remove Wallpaper -> TRUE
+           $c = [Regex]::Replace($c, 'pub\s+remove_wallpaper\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub remove_wallpaper: bool,')
+           
+           # Direct Server (UDP) -> TRUE
+           $c = [Regex]::Replace($c, 'pub\s+direct_server\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub direct_server: bool,')
+           
+           # Hardware Codec -> TRUE
+           $c = [Regex]::Replace($c, 'pub\s+hwcodec\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub hwcodec: bool,')
+
+           # 3. Adicionar as funções auxiliares no final do arquivo
+           $DefaultFuncs = @"
+           
+           // SAURUS PATCH FUNCTIONS
+           fn default_true() -> bool { true }
+           fn default_false() -> bool { false }
+           "@
+           
+           if (-not $c.Contains("fn default_true")) {
+               $c = $c + $DefaultFuncs
+           }
+
+           Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
+           Write-Host "Código fonte modificado com sucesso!"
+        } else {
+           Write-Error "Arquivo config.rs não encontrado!"
+           exit 1
         }
 
     # --- PREPARAÇÃO ---
@@ -119,66 +155,46 @@ jobs:
       env:
         VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
     
-    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (UPDATE BLOCK) ---
-    - name: Generate Locked Config
+    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (BACKUP) ---
+    - name: Generate Config Backup
       shell: powershell
       run: |
-        # Configuração TOML Exata para RustDesk 1.2.x
-        # O MAIS IMPORTANTE: check-update = false
         $ConfigContent = @"
         stop-service = false
-        
         [options]
-        # -- ATUALIZAÇÕES BLOQUEADAS --
         check-update = false
         auto-update = false
-        
-        # -- Segurança --
         confirm-close = true
-        
-        # -- Performance (Sua solicitação) --
         remove-wallpaper = true
         direct-server = true
         enable-ipv6 = true
         hwcodec = true
         use-d3d = true
         capture-directx = true
-        
-        # -- Visualização --
         view-scale = 'adaptive'
         scroll-style = 'auto'
         view-quality = 'low'
-        
-        # -- Outros --
-        open-new-tab = true
-        end-note = false
         "@
-        
         Set-Content -Path "RustDesk2.toml" -Value $ConfigContent -Encoding UTF8
-        Write-Host "Configuração criada com Update Bloqueado."
 
-    # --- EMPACOTAMENTO PRO (REGISTRY + TRIPLE COPY) ---
+    # --- EMPACOTAMENTO PRO ---
     - name: Create Power Installer
       shell: powershell
       run: |
-        Write-Host "Criando instalador avançado..."
-        
+        Write-Host "Criando instalador..."
         $StageDir = "Staging_Area"
         New-Item -ItemType Directory -Force -Path $StageDir
         
-        # 1. Copia arquivos do RustDesk
         $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
         $SourceFolder = $Files.Directory.FullName
         Copy-Item "$SourceFolder\rustdesk.exe" $StageDir
         Copy-Item "$SourceFolder\*.dll" $StageDir
         if (Test-Path "$SourceFolder\data") { Copy-Item "$SourceFolder\data" $StageDir -Recurse }
         
-        # 2. Baixa o Visual C++ Redistributable
-        Write-Host "Baixando Visual C++..."
         $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
         
-        # 3. Inno Setup - APLICANDO TODAS AS TRAVAS
+        # Script Inno Setup Otimizado
         $IssContent = @"
         [Setup]
         AppName=RustDesk
@@ -194,33 +210,23 @@ jobs:
         CloseApplications=yes
 
         [Dirs]
-        Name: "{userappdata}\RustDesk\config"; Permissions: users-modify
         Name: "{commonappdata}\RustDesk\config"; Permissions: users-modify
 
         [Files]
         Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
         
-        ; Cópia 1: Pasta de Instalação (Funciona como Portable/Padrão)
-        Source: "RustDesk2.toml"; DestDir: "{app}"; Flags: ignoreversion
-        
-        ; Cópia 2: Pasta do Usuário Atual (AppData)
-        Source: "RustDesk2.toml"; DestDir: "{userappdata}\RustDesk\config"; Flags: ignoreversion
-        
-        ; Cópia 3: Pasta Global (ProgramData - Para o Serviço)
+        ; Copia para pasta GLOBAL (Todos os usuários leem daqui se não tiverem config propria)
         Source: "RustDesk2.toml"; DestDir: "{commonappdata}\RustDesk\config"; Flags: ignoreversion
 
-        ; Visual C++
+        ; Copia para pasta do Executável (Portable Mode Trigger)
+        Source: "RustDesk2.toml"; DestDir: "{app}"; Flags: ignoreversion
+
         Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
         [Registry]
-        ; --- TRAVA DE UPDATE VIA REGISTRO (HKCU & HKLM) ---
+        ; Força a chave de update no registro para o usuário atual (mesmo que seja admin instalando)
         Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "false"; Flags: uninsdeletevalue
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "auto-update"; ValueData: "false"; Flags: uninsdeletevalue
-        
-        ; Configurações de Performance no Registro (Redundância)
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "remove-wallpaper"; ValueData: "true"; Flags: uninsdeletevalue
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "direct-server"; ValueData: "true"; Flags: uninsdeletevalue
-        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "view-quality"; ValueData: "low"; Flags: uninsdeletevalue
+        Root: HKLM; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "false"; Flags: uninsdeletevalue
 
         [Icons]
         Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
@@ -230,33 +236,12 @@ jobs:
         Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
 
         [Run]
-        Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Instalando componentes do sistema (Visual C++)..."; Flags: waituntilterminated
+        Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Instalando componentes..."; Flags: waituntilterminated
         Filename: "{app}\rustdesk.exe"; Description: "Abrir Saurus Remote"; Flags: nowait postinstall skipifsilent
-
-        [Code]
-        procedure CurStepChanged(CurStep: TSetupStep);
-        var
-          UserConfig: String;
-          GlobalConfig: String;
-        begin
-          if CurStep = ssInstall then
-          begin
-            // Garante que as pastas existem antes da copia
-            UserConfig := ExpandConstant('{userappdata}\RustDesk\config');
-            GlobalConfig := ExpandConstant('{commonappdata}\RustDesk\config');
-            ForceDirectories(UserConfig);
-            ForceDirectories(GlobalConfig);
-            
-            // Apaga configs antigas se existirem (para forçar as novas)
-            if FileExists(UserConfig + '\RustDesk2.toml') then DeleteFile(UserConfig + '\RustDesk2.toml');
-            if FileExists(GlobalConfig + '\RustDesk2.toml') then DeleteFile(GlobalConfig + '\RustDesk2.toml');
-          end;
-        end;
         "@
         
         Set-Content -Path "setup.iss" -Value $IssContent -Encoding ASCII
         
-        # Compila
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 
     - name: Upload Power Installer
