@@ -1,375 +1,251 @@
-name: Build Saurus Legacy (32-bit Final v63 Shortcut Fix)
+name: Build Saurus Installer (v67 - Flexible Source Patch)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-legacy:
-    runs-on: windows-2019
+  build-windows:
+    runs-on: windows-2022
     
     env:
-      RUSTDESK_API_SERVER: ""
-      VCPKG_ROOT: "C:\\vcpkg"
-      VCPKG_DEFAULT_TRIPLET: x86-windows-static
+      LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
+      RUSTDESK_API_SERVER: "" 
+      VCPKG_BINARY_SOURCES: "clear;default,readwrite"
 
     steps:
-    - name: Checkout Legacy Code (1.1.9)
+    - name: Checkout source code
       uses: actions/checkout@v4
       with:
-        repository: rustdesk/rustdesk
-        ref: 1.1.9
         submodules: recursive
 
-    - name: Setup Rust (1.65.0)
-      uses: dtolnay/rust-toolchain@master
+    # --- CACHES ---
+    - name: Cache Rust Dependencies
+      uses: swatinem/rust-cache@v2
       with:
-        toolchain: 1.65.0
-        targets: i686-pc-windows-msvc
+        workspaces: .
 
-    # --- FERRAMENTAS ---
-    - name: Install Build Tools
+    - name: Cache VCPKG Archives
+      uses: actions/cache@v4
+      with:
+        path: C:\Users\runneradmin\AppData\Local\vcpkg\archives
+        key: vcpkg-archives-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-archives-${{ runner.os }}-
+
+    - name: Cache Flutter Packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          flutter/.pub-cache
+          flutter/.dart_tool
+        key: flutter-pub-${{ runner.os }}-${{ hashFiles('flutter/pubspec.yaml') }}
+        restore-keys: |
+          flutter-pub-${{ runner.os }}-
+
+    # --- SETUP ---
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.22.2'
+        channel: 'stable'
+
+    - name: Install LLVM & Inno Setup
       run: |
-        choco install llvm --version 12.0.0 --allow-downgrade -y
-        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+        choco install llvm -y
+        choco install innosetup -y
+        echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       shell: powershell
 
-    # --- LIBSODIUM ---
-    - name: Setup Libsodium
+    # --- PATCH PROFUNDO NO CÓDIGO FONTE (A SOLUÇÃO REAL) ---
+    - name: Hardcode Settings in Source (Flexible Regex)
       shell: powershell
       run: |
-        $Url = "https://download.libsodium.org/libsodium/releases/libsodium-1.0.18-msvc.zip"
-        $Zip = "libsodium.zip"
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                & curl.exe -L -o $Zip $Url --retry 5 --retry-connrefused --connect-timeout 60
-                if ((Get-Item $Zip).Length -gt 1000) { $success = $true }
-            } catch { Start-Sleep 5; $retryCount++ }
-        }
-        if (-not $success) { throw "Download Libsodium falhou" }
-        Expand-Archive -Path $Zip -DestinationPath "libsodium_install" -Force
-        New-Item -ItemType Directory -Force -Path "C:\libs_x86\lib"
-        New-Item -ItemType Directory -Force -Path "C:\libs_x86\include"
-        $Lib = "libsodium_install\libsodium\Win32\Release\v142\static\libsodium.lib"
-        Copy-Item $Lib "C:\libs_x86\lib\libsodium.lib" -Force
-        Copy-Item $Lib "C:\libs_x86\lib\sodium.lib" -Force
-        Copy-Item "libsodium_install\libsodium\include\*" "C:\libs_x86\include" -Recurse -Force
-
-    - name: Inject Server Configuration
-      shell: powershell
-      run: |
+        Write-Host "Aplicando Patch Cirúrgico nas Configurações..."
         $ConfigFile = "libs/hbb_common/src/config.rs"
-        $SeuIP = "20.195.216.23:443"
-        $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc="
+        
+        # Injeção de Servidor
+        $SeuIP = "20.195.216.23:443" 
+        $SuaChave = "OJ7QiUrqNu0wM13vDSp4nmAlDu6hy3n8hTI5Wksl2Tc=" 
+        
         if (Test-Path $ConfigFile) {
            $c = Get-Content $ConfigFile -Raw
+           
+           # 1. Configurar Servidor
            $c = $c -replace '(?s)pub const RENDEZVOUS_SERVERS:.*?;', "pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[`"$SeuIP`"];"
            $c = $c -replace '(?s)pub const RS_PUB_KEY:.*?;', "pub const RS_PUB_KEY: &'static str = `"$SuaChave`";"
+
+           # 2. Alterar Defaults das Structs (Usando Regex flexível para espaços)
+           # A ideia é interceptar a definição da struct e adicionar o atributo #[serde(default...)]
+           
+           # Check Update -> FALSE
+           $c = [Regex]::Replace($c, 'pub\s+check_update\s*:\s*bool\s*,', '#[serde(default = "default_false")] pub check_update: bool,')
+           
+           # Remove Wallpaper -> TRUE
+           $c = [Regex]::Replace($c, 'pub\s+remove_wallpaper\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub remove_wallpaper: bool,')
+           
+           # Direct Server (UDP) -> TRUE
+           $c = [Regex]::Replace($c, 'pub\s+direct_server\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub direct_server: bool,')
+           
+           # Hardware Codec -> TRUE
+           $c = [Regex]::Replace($c, 'pub\s+hwcodec\s*:\s*bool\s*,', '#[serde(default = "default_true")] pub hwcodec: bool,')
+
+           # 3. Adicionar as funções auxiliares no final do arquivo
+           $DefaultFuncs = @"
+           
+           // SAURUS PATCH FUNCTIONS
+           fn default_true() -> bool { true }
+           fn default_false() -> bool { false }
+           "@
+           
+           if (-not $c.Contains("fn default_true")) {
+               $c = $c + $DefaultFuncs
+           }
+
            Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
+           Write-Host "Código fonte modificado com sucesso!"
+        } else {
+           Write-Error "Arquivo config.rs não encontrado!"
+           exit 1
         }
 
-    - name: Fix Legacy Code Logic
+    # --- PREPARAÇÃO ---
+    - name: Fix Flutter Dependencies
+      working-directory: ./flutter
       shell: powershell
       run: |
-        $ConfigFile = "libs\hbb_common\src\config.rs"
-        $c = Get-Content $ConfigFile -Raw
-        $c = $c -replace "let _ = CONFIG.read\(\).unwrap\(\);", "let _lock = CONFIG.read().unwrap();"
-        Set-Content -Path $ConfigFile -Value $c -Encoding UTF8
+        $File = "pubspec.yaml"
+        $Content = Get-Content $File -Raw
+        $NewContent = $Content -replace 'extended_text:.*', 'extended_text: ^13.0.0'
+        Set-Content -Path $File -Value $NewContent -Encoding UTF8
 
-    # --- BYPASS SINGLE INSTANCE (GHOST MODE) ---
-    - name: Bypass Single Instance Check
+    - name: Prepare Flutter Dependencies
+      working-directory: ./flutter
+      run: flutter pub get
+      shell: cmd
+
+    - name: Install Flutter Rust Bridge Codegen
+      run: |
+        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
+      shell: powershell
+
+    - name: Generate Bridge Code
       shell: powershell
       run: |
-        $Main = "src/main.rs"
-        if (Test-Path $Main) {
-            $c = Get-Content $Main -Raw
-            # Reativa console para garantir bypass de instancia
-            $c = $c.Replace('#![windows_subsystem = "windows"]', '// #![windows_subsystem = "windows"]')
-            Set-Content -Path $Main -Value $c -Encoding UTF8
-        }
+        $env:PATH += ";C:\Users\runneradmin\.cargo\bin"
+        flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs
 
-    # --- GERADOR DE UI (v63 - INPUT FIX + JSON ARG) ---
-    - name: Inline Assets (Smart Shortcut Injection)
-      shell: python
-      run: |
-        import os
-        import shutil
-        import re
-
-        SRC_UI = "src/ui"
-        HTML_SOURCE = "html" 
-        
-        if not os.path.exists(SRC_UI): os.makedirs(SRC_UI)
-
-        # 1. Copia arquivos
-        if os.path.exists(HTML_SOURCE):
-            for item in os.listdir(HTML_SOURCE):
-                s = os.path.join(HTML_SOURCE, item)
-                d = os.path.join(SRC_UI, item)
-                if os.path.isfile(s): shutil.copy2(s, d)
-
-        def read_file(fname):
-            fpath = os.path.join(SRC_UI, fname)
-            if os.path.exists(fpath):
-                with open(fpath, "rb") as f:
-                    return f.read().decode("utf-8", errors="ignore").replace("\r", "")
-            return ""
-
-        # 2. INJEÇÃO INTELIGENTE
-        # Checkboxes visiveis para o motor (opacity 0.01) para nao serem ignorados
-        # + Tentativa de passar JSON no install_me
-        
-        CHECKBOXES = """
-        <div style="opacity:0.01; position:absolute; top:0; left:0; width:1px; height:1px; overflow:hidden;">
-            <input type="checkbox" id="desktop-shortcut" checked="checked" value="true" />
-            <input type="checkbox" id="desktop_shortcut" checked="checked" value="true" />
-        </div>
-        """
-
-        AUTO_INSTALL_SCRIPT = """
-        <style>
-            html, body { background-color: #FFFFFF !important; }
-            #install-overlay {
-                position: fixed; top: 0; left: 0; width: 100%; height: 80px;
-                background: #00ff00; color: #000; z-index: 99999;
-                text-align: center; line-height: 80px; font-size: 18px; font-weight: bold;
-                border-bottom: 2px solid #000;
-            }
-        </style>
-        <div id="install-overlay">
-            SAURUS: Configurando Atalho... <span id="cnt">5</span>s
-        </div>
-        <script type="text/tiscript">
-            function self.ready() {
-                view.state = View.WINDOW_SHOWN;
-                var count = 5;
-                var el = $(#cnt);
-                
-                // Força visualmente e logicamente os inputs
-                var chk = $(#desktop-shortcut);
-                if(chk) { chk.value = true; chk.state.checked = true; }
-                
-                self.timer(1000, function() {
-                    count = count - 1;
-                    if(el) el.text = count.toString();
-                    
-                    if (count <= 0) {
-                        if(el) $(#install-overlay).text = "Instalando...";
-                        
-                        // TENTATIVA 1: Passar string "true" (funcionou install, falhou atalho)
-                        // TENTATIVA 2: Passar JSON com config explicita
-                        try { 
-                           // Tenta passar config JSON string. Se o Rust 1.1.9 suportar, isso garante o atalho.
-                           // Se falhar, o checkbox no DOM deve garantir.
-                           view.install_me("true"); 
-                        } catch(e) { stdout.println("Install Error: " + e); }
-                        
-                        return false; 
-                    }
-                    return true;
-                });
-            }
-        </script>
-        """
-
-        # 3. Processar index.html
-        index_file = os.path.join(SRC_UI, "index.html")
-        if os.path.exists(index_file):
-            print("Bundling index.html...")
-            content = read_file("index.html")
-            
-            # Inline
-            css_common = read_file("common.css")
-            tis_common = read_file("common.tis")
-            
-            content = re.sub(r'@import\s+url\(.*?\);', '', content)
-            content = re.sub(r'include\s+".*?";', '', content)
-
-            # Injeta CSS
-            content = content.replace("</head>", f"<style>{css_common}</style></head>")
-            
-            # Injeta Checkboxes + Script
-            final_block = f"{CHECKBOXES}\n<script type='text/tiscript'>{tis_common}</script>\n{AUTO_INSTALL_SCRIPT}"
-            
-            if "</body>" in content:
-                content = content.replace("</body>", f"{final_block}</body>")
-            else:
-                content += final_block
-
-            with open(index_file, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-
-        # 4. Outros arquivos
-        other_htmls = ["chatbox.html", "cm.html", "install.html", "remote.html"]
-        for h in other_htmls:
-            p = os.path.join(SRC_UI, h)
-            if os.path.exists(p):
-                c = read_file(h)
-                c = re.sub(r'@import\s+url\(.*?\);', '', c)
-                if "</head>" in c: 
-                    c = c.replace("</head>", "<style>html { background: #fff; }</style></head>")
-                with open(p, "w", encoding="utf-8", newline="\n") as f: f.write(c)
-
-        # 5. Inline.rs
-        rust_code = []
-        mandatory = ["get_index", "get_chatbox", "get_cm", "get_install", "get_remote", "get_css_common", "get_css_index", "get_tis_common"]
-        file_map = {
-            "get_index": "index.html", "get_chatbox": "chatbox.html", "get_cm": "cm.html",
-            "get_install": "install.html", "get_remote": "remote.html",
-            "get_css_common": "common.css", "get_css_index": "index.css", "get_tis_common": "common.tis"
-        }
-        
-        processed = set()
-        for func in mandatory:
-            fname = file_map.get(func, func + ".html")
-            rust_code.append(f'pub fn {func}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
-            processed.add(fname)
-
-        for fname in os.listdir(SRC_UI):
-            if fname not in processed and os.path.isfile(os.path.join(SRC_UI, fname)) and fname != "inline.rs":
-                safe_name = "get_" + fname.replace(".", "_").replace("-", "_")
-                rust_code.append(f'pub fn {safe_name}() -> String {{ String::from_utf8_lossy(include_bytes!("{fname}")).to_string() }}')
-
-        with open(os.path.join(SRC_UI, "inline.rs"), "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(rust_code))
-        
-        print("Done.")
-
-    - name: Ensure Resources Exist
+    - name: Install C++ Libs (VCPKG)
       shell: powershell
       run: |
-        $icon = Get-ChildItem -Path . -Recurse -Filter "icon.ico" | Select-Object -First 1
-        if ($icon) { Copy-Item $icon.FullName ".\icon.ico" -Force } 
-        else { & curl.exe -L -o icon.ico "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/icon.ico" --retry 3 }
-        $manifest = Get-ChildItem -Path . -Recurse -Filter "manifest.xml" | Select-Object -First 1
-        if ($manifest) { Copy-Item $manifest.FullName ".\manifest.xml" -Force } 
-        else { & curl.exe -L -o manifest.xml "https://raw.githubusercontent.com/rustdesk/rustdesk/master/res/manifest.xml" --retry 3 }
+        vcpkg install --triplet x64-windows-static
+        $BaseDir = Get-Location
+        $IncludePath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\include"
+        $LibPath = Join-Path $BaseDir "vcpkg_installed\x64-windows-static\lib"
+        echo "BINDGEN_EXTRA_CLANG_ARGS=-I$IncludePath" >> $env:GITHUB_ENV
+        echo "CPATH=$IncludePath" >> $env:GITHUB_ENV
+        echo "RUSTFLAGS=-L native=$LibPath" >> $env:GITHUB_ENV
+        echo "VCPKG_ROOT=$BaseDir" >> $env:GITHUB_ENV
 
-    # --- ARQUIVOS AUXILIARES ---
-    - name: Create Helper Files (Src)
+    # --- BUILD ---
+    - name: Build RustDesk
+      run: python build.py --flutter
+      env:
+        VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
+    
+    # --- GERAR ARQUIVO DE CONFIGURAÇÃO (BACKUP) ---
+    - name: Generate Config Backup
       shell: powershell
       run: |
-        $VersionCode = "pub const VERSION: &'static str = `"1.1.9`";"
-        Set-Content -Path "src/version.rs" -Value $VersionCode -Encoding UTF8
-        
-        if (!(Test-Path "src/platform")) { New-Item -ItemType Directory -Path "src/platform" -Force }
-        $StubContent = @"
-        #include <windows.h>
-        #include <stdint.h>
-        extern "C" {
-            void handleMask(uint8_t* buf, int width, int height, int pitch) {}
-            void drawOutline(uint8_t* buf, int width, int height, int pitch, int x, int y, int w, int h) {}
-            void get_di_bits(HDC hdc, HBITMAP hbm, int w, int h, uint8_t* buf) {}
-            BOOL LaunchProcessWin(const wchar_t* command_line) { return TRUE; }
-            BOOL inputDesktopSelected() { return TRUE; }
-            BOOL selectInputDesktop() { return TRUE; }
-            BOOL get_active_user(wchar_t* buffer, DWORD size) { return TRUE; }
-            BOOL blank_screen(BOOL on) { return TRUE; }
-            void AddRecentDocument(const wchar_t* path) {}
-        }
+        $ConfigContent = @"
+        stop-service = false
+        [options]
+        check-update = false
+        auto-update = false
+        confirm-close = true
+        remove-wallpaper = true
+        direct-server = true
+        enable-ipv6 = true
+        hwcodec = true
+        use-d3d = true
+        capture-directx = true
+        view-scale = 'adaptive'
+        scroll-style = 'auto'
+        view-quality = 'low'
         "@
-        Set-Content -Path "src/platform/windows.cc" -Value $StubContent -Encoding UTF8
+        Set-Content -Path "RustDesk2.toml" -Value $ConfigContent -Encoding UTF8
 
-    # --- REWRITE BUILD.RS ---
-    - name: Rewrite build.rs
+    # --- EMPACOTAMENTO PRO ---
+    - name: Create Power Installer
       shell: powershell
       run: |
-        $AbsPath = (Get-Location).Path.Replace("\", "\\")
-        $NewContent = @"
-        use std::env;
-        use std::fs::File;
-        use std::io::Write;
-        use std::path::Path;
-
-        fn main() {
-            #[cfg(windows)]
-            {
-                let cc_path = "src/platform/windows.cc";
-                if std::path::Path::new(cc_path).exists() {
-                    cc::Build::new().file(cc_path).cpp(true).compile("bridge");
-                    println!("cargo:rustc-link-lib=static=bridge");
-                }
-            }
-            println!("cargo:rustc-link-search=native=C:\\libs_x86\\lib");
-            println!("cargo:rustc-link-lib=static=sodium");
-
-            let out_dir = env::var("OUT_DIR").unwrap();
-            let dest_path = Path::new(&out_dir).join("version.rs");
-            let mut f = File::create(&dest_path).unwrap();
-            f.write_all(b"pub const VERSION: &'static str = \"1.1.9\";").unwrap();
-
-            #[cfg(windows)]
-            {
-                let mut res = winres::WindowsResource::new();
-                res.set_icon("$AbsPath\\icon.ico");
-                res.set_manifest_file("$AbsPath\\manifest.xml");
-                let _ = res.compile();
-            }
-        }
-        "@
-        Set-Content -Path "build.rs" -Value $NewContent -Encoding UTF8
-
-    # --- INSTALAÇÃO VCPKG ---
-    - name: Install Dependencies (VCPKG x86)
-      shell: powershell
-      run: |
-        $ErrorActionPreference = "Stop"
-        if (Test-Path "C:\vcpkg") { Remove-Item "C:\vcpkg" -Recurse -Force }
-        & git clone "https://github.com/microsoft/vcpkg.git" "C:\vcpkg"
-        Set-Location "C:\vcpkg"
-        & git fetch --all --tags
-        & git checkout "5765d1d644787a28e8d839659345c26915152771"
-        cmd /c "bootstrap-vcpkg.bat -disableMetrics"
-        .\vcpkg integrate install
-        $maxRetries = 5; $retryCount = 0; $success = $false
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                cmd /c "vcpkg install libvpx:x86-windows-static libyuv:x86-windows-static opus:x86-windows-static"
-                if ($LASTEXITCODE -eq 0) { $success = $true }
-            } catch { Start-Sleep 15; $retryCount++ }
-        }
-        if (-not $success) { throw "Falha VCPKG" }
-
-    # --- DOWNLOAD SCITER DLL ---
-    - name: Download Sciter DLL (Clone Master)
-      shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path "target\release"
-        if (Test-Path "sciter_repo") { Remove-Item "sciter_repo" -Recurse -Force }
-        & git clone --depth 1 "https://github.com/c-smile/sciter-sdk.git" "sciter_repo"
-        $DllSource = "sciter_repo\bin.win\x32\sciter.dll"
-        if (Test-Path $DllSource) {
-            Copy-Item $DllSource "target\release\sciter.dll" -Force
-            Write-Host "DLL Sciter 32-bit instalada!"
-        } else { throw "DLL nao encontrada" }
-
-    # --- BUILD FINAL ---
-    - name: Build Legacy
-      run: |
-        $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-        $env:BINDGEN_EXTRA_CLANG_ARGS = "-I C:/vcpkg/installed/x86-windows-static/include"
-        $env:OPUS_LIB_DIR = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:OPUS_INCLUDE_DIR = "C:\vcpkg\installed\x86-windows-static\include"
-        $env:OPUS_STATIC = "1"
-        $env:DEP_VPX_LIB = "C:\vcpkg\installed\x86-windows-static\lib"
-        $env:DEP_VPX_INCLUDE = "C:\vcpkg\installed\x86-windows-static\include"
-        $env:SODIUM_LIB_DIR = "C:\libs_x86\lib"
-        $env:SODIUM_SHARED = "false"
-        $env:RUSTFLAGS = "-C target-feature=+crt-static"
+        Write-Host "Criando instalador..."
+        $StageDir = "Staging_Area"
+        New-Item -ItemType Directory -Force -Path $StageDir
         
-        cargo build --target i686-pc-windows-msvc --release --features inline
-      shell: powershell
+        $Files = Get-ChildItem -Path . -Recurse -Filter "rustdesk.exe" | Where-Object { $_.FullName -notmatch "vcpkg" } | Select-Object -First 1
+        $SourceFolder = $Files.Directory.FullName
+        Copy-Item "$SourceFolder\rustdesk.exe" $StageDir
+        Copy-Item "$SourceFolder\*.dll" $StageDir
+        if (Test-Path "$SourceFolder\data") { Copy-Item "$SourceFolder\data" $StageDir -Recurse }
+        
+        $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        Invoke-WebRequest -Uri $VcUrl -OutFile "$StageDir\vc_redist.x64.exe"
+        
+        # Script Inno Setup Otimizado
+        $IssContent = @"
+        [Setup]
+        AppName=RustDesk
+        AppVersion=1.2.4
+        DefaultDirName={autopf}\RustDesk
+        DefaultGroupName=RustDesk
+        UninstallDisplayIcon={app}\rustdesk.exe
+        Compression=lzma2
+        SolidCompression=yes
+        OutputDir=.
+        OutputBaseFilename=Saurus_Instalador
+        PrivilegesRequired=admin
+        CloseApplications=yes
 
-    - name: Package Legacy
-      shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path "Saurus_Legacy_32bit"
-        Copy-Item "target\i686-pc-windows-msvc\release\rustdesk.exe" "Saurus_Legacy_32bit\SaurusRemote_Legacy.exe"
-        Copy-Item "target\release\sciter.dll" "Saurus_Legacy_32bit\"
-        Write-Host "Pacote Legacy Criado!"
+        [Dirs]
+        Name: "{commonappdata}\RustDesk\config"; Permissions: users-modify
 
-    - name: Upload Legacy
+        [Files]
+        Source: "Staging_Area\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        
+        ; Copia para pasta GLOBAL (Todos os usuários leem daqui se não tiverem config propria)
+        Source: "RustDesk2.toml"; DestDir: "{commonappdata}\RustDesk\config"; Flags: ignoreversion
+
+        ; Copia para pasta do Executável (Portable Mode Trigger)
+        Source: "RustDesk2.toml"; DestDir: "{app}"; Flags: ignoreversion
+
+        Source: "Staging_Area\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+
+        [Registry]
+        ; Força a chave de update no registro para o usuário atual (mesmo que seja admin instalando)
+        Root: HKCU; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "false"; Flags: uninsdeletevalue
+        Root: HKLM; Subkey: "Software\RustDesk"; ValueType: string; ValueName: "check-update"; ValueData: "false"; Flags: uninsdeletevalue
+
+        [Icons]
+        Name: "{group}\RustDesk"; Filename: "{app}\rustdesk.exe"
+        Name: "{autodesktop}\RustDesk"; Filename: "{app}\rustdesk.exe"; Tasks: desktopicon
+
+        [Tasks]
+        Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
+
+        [Run]
+        Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Instalando componentes..."; Flags: waituntilterminated
+        Filename: "{app}\rustdesk.exe"; Description: "Abrir Saurus Remote"; Flags: nowait postinstall skipifsilent
+        "@
+        
+        Set-Content -Path "setup.iss" -Value $IssContent -Encoding ASCII
+        
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
+
+    - name: Upload Power Installer
       uses: actions/upload-artifact@v4
       with:
-        name: Saurus-Remote-Legacy-32bit
-        path: Saurus_Legacy_32bit
+        name: Saurus-Instalador-Completo
+        path: Saurus_Instalador.exe
